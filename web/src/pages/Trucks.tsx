@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { api, usePoll, ddmm, type Truck } from "@/lib/api"
+import { api, usePoll, ddmm, errText, type Truck } from "@/lib/api"
 
 const EMPTY = { id: 0, name: "", driver: "", city_name: "", radius: 150, body_mask: 1, body_name: "тент", height: 2.7, capacity: 20, free_from: new Date().toISOString().slice(0, 10), active: 1, relevant: 0, status: "free" as const }
 
@@ -16,18 +16,23 @@ export default function TrucksPage() {
   const [edit, setEdit] = useState<Truck | null>(null)
   const [scanning, setScanning] = useState<number | null>(null)
   const [toggling, setToggling] = useState<number | null>(null)
+  // пока PATCH и перезагрузка не закончились, показываем выбранное значение, а не устаревший ответ поллинга
+  const [pending, setPending] = useState<Record<number, Truck["status"]>>({})
   const toggle = async (t: Truck, free: boolean) => {
-    setToggling(t.id)
+    const status = free ? "free" : "busy"
+    setToggling(t.id); setPending((p) => ({ ...p, [t.id]: status }))
     try {
-      const r = await api<Truck>(`/trucks/${t.id}`, { method: "PATCH", body: { status: free ? "free" : "busy" } })
+      const r = await api<Truck>(`/trucks/${t.id}`, { method: "PATCH", body: { status } })
       toast.success(free ? `${t.name} свободна — ищем грузы` : `${t.name} занята до ${ddmm(r.free_from)} — поправьте дату и город, если нужно`)
-      reload()
-    } catch (e) { toast.error(String(e)) } finally { setToggling(null) }
+      await reload()
+    } catch (e) { toast.error(errText(e)) } finally {
+      setToggling(null); setPending((p) => { const n = { ...p }; delete n[t.id]; return n })
+    }
   }
   const scan = async (t: Truck) => {
     setScanning(t.id)
     try { await api(`/trucks/${t.id}/scan`, { method: "POST" }); toast.success(`Биржа просмотрена для ${t.name}`); reload() }
-    catch (e) { toast.error(String(e)) } finally { setScanning(null) }
+    catch (e) { toast.error(errText(e)) } finally { setScanning(null) }
   }
   return (
     <div className="flex flex-col gap-5">
@@ -39,7 +44,7 @@ export default function TrucksPage() {
         <Button onClick={() => setEdit({ ...EMPTY })}><Plus />Добавить машину</Button>
       </div>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {data?.map((t) => (
+        {data?.map((tr) => { const t = pending[tr.id] ? { ...tr, status: pending[tr.id] } : tr; return (
           <div key={t.id} className="flex flex-col gap-3 rounded-xl border bg-card p-4">
             <div className="flex items-start justify-between gap-2">
               <div>
@@ -50,8 +55,9 @@ export default function TrucksPage() {
                 : t.status === "busy" ? <Badge variant="outline">занята</Badge> : <Badge variant="secondary">ищем груз</Badge>}
             </div>
             <div className="flex items-center gap-2">
-              <Switch id={`free-${t.id}`} checked={t.status !== "busy"} disabled={toggling === t.id} onCheckedChange={(v) => toggle(t, v)} />
-              <Label htmlFor={`free-${t.id}`} className="text-sm">{t.status === "busy" ? "Занята" : "Свободна"}</Label>
+              <Switch id={`free-${t.id}`} aria-label="Машина свободна" checked={t.status !== "busy"} disabled={toggling === t.id} onCheckedChange={(v) => toggle(t, v)} />
+              <Label htmlFor={`free-${t.id}`} className="text-sm">Свободна</Label>
+              {t.status === "busy" && <span className="text-xs text-muted-foreground">занята до {ddmm(t.free_from)}</span>}
             </div>
             <div className="grid grid-cols-3 gap-2 rounded-lg bg-muted/50 p-3 text-sm">
               <div><div className="text-xs text-muted-foreground">{t.status === "busy" ? "Освободится в" : "Свободна в"}</div><div className="font-medium">{t.city_name}</div></div>
@@ -66,7 +72,7 @@ export default function TrucksPage() {
               </div>
             </div>
           </div>
-        ))}
+        )})}
       </div>
       <TruckDialog t={edit} onClose={() => setEdit(null)} onDone={reload} />
     </div>
@@ -82,7 +88,7 @@ function TruckDialog({ t, onClose, onDone }: { t: Truck | null; onClose: () => v
     try {
       await api(cur.id ? `/trucks/${cur.id}` : "/trucks", { method: cur.id ? "PUT" : "POST", body: { ...cur, active: !!cur.active } })
       toast.success("Сохранено — оценки грузов пересчитаны"); setF(null); onClose(); onDone()
-    } catch (e) { toast.error(String(e)) }
+    } catch (e) { toast.error(errText(e)) }
   }
   const field = (k: keyof Truck, label: string, type = "text") => (
     <div className="flex flex-col gap-1.5">

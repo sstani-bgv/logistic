@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
-import { api, usePoll, ago, type Rule } from "@/lib/api"
+import { api, errText, usePoll, ago, type Rule } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 const MATCH: Record<string, string> = { firm_id: "фирма", firm_name: "фирма", cargo: "тип груза", load_city: "погрузка", unload_city: "выгрузка", note: "примечание", profile: "тип заказчика", none: "заметка агенту" }
@@ -23,7 +23,7 @@ export default function KnowledgePage() {
   const add = async () => {
     setBusy(true)
     try { const r = await api<Rule>("/rules", { body: { text } }); toast.success("Правило добавлено", { description: r.text }); setText(""); reload() }
-    catch (e) { toast.error(String(e)) } finally { setBusy(false) }
+    catch (e) { toast.error(errText(e)) } finally { setBusy(false) }
   }
   const toggle = async (r: Rule, active: boolean) => { await api(`/rules/${r.id}`, { method: "PATCH", body: { active } }); reload() }
   const del = async (r: Rule) => { await api(`/rules/${r.id}`, { method: "DELETE" }); reload() }

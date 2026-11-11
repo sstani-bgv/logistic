@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
-import { api, usePoll, rub, ago, ddmm, type Dialog, type Truck } from "@/lib/api"
+import { api, usePoll, rub, ago, ddmm, errText, type Dialog, type DialogPatchResult } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 const COLS = [
@@ -29,7 +29,7 @@ export default function DialogsPage() {
       const r = await api<{ started: number }>("/agent/run", { method: "POST" })
       toast.success(r.started ? `Агент взял в работу грузов: ${r.started}` : "Новых подходящих грузов нет — агент ждёт следующего прохода")
       reload()
-    } catch (e) { toast.error(String(e)) } finally { setRunning(false) }
+    } catch (e) { toast.error(errText(e)) } finally { setRunning(false) }
   }
 
   return (
@@ -76,17 +76,22 @@ function ChatSheet({ d, onClose, onChange }: { d: Dialog | null; onClose: () => 
   const [text, setText] = useState("")
   const [busy, setBusy] = useState(false)
   const r = d?.load?.raw
-  const patch = async (body: object) => {
-    if (!d) return
-    const r = await api<{ truck?: Truck | null }>(`/dialogs/${d.id}`, { method: "PATCH", body })
-    if (r.truck) toast.success(`${r.truck.name} занята до ${ddmm(r.truck.free_from)}, освободится в ${r.truck.city_name}`)
-    onChange()
+  const [saving, setSaving] = useState(false)
+  const patch = async (body: Partial<{ auto: boolean; status: "taken" | "declined" }>) => {
+    if (!d || saving) return
+    setSaving(true)
+    try {
+      const res = await api<DialogPatchResult>(`/dialogs/${d.id}`, { method: "PATCH", body })
+      if (body.status === "taken" && res.truck)
+        toast.success(`${res.truck.name} занята до ${ddmm(res.truck.free_from)}, освободится в ${res.truck.city_name}`)
+      onChange()
+    } catch (e) { toast.error(errText(e)) } finally { setSaving(false) }
   }
   const send = async () => {
     if (!d || !text.trim()) return
     setBusy(true)
     try { await api(`/dialogs/${d.id}/send`, { body: { text } }); setText(""); onChange() }
-    catch (e) { toast.error(String(e)) } finally { setBusy(false) }
+    catch (e) { toast.error(errText(e)) } finally { setBusy(false) }
   }
   return (
     <Sheet open={!!d} onOpenChange={(o) => !o && onClose()}>
@@ -118,10 +123,10 @@ function ChatSheet({ d, onClose, onChange }: { d: Dialog | null; onClose: () => 
               <Button size="icon" onClick={send} disabled={busy}><Send /></Button>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Switch id="auto" checked={!!d.auto} onCheckedChange={(v) => patch({ auto: v })} /><Label htmlFor="auto" className="text-sm">Агент отвечает сам</Label>
+              <Switch id="auto" checked={!!d.auto} disabled={saving} onCheckedChange={(v) => patch({ auto: v })} /><Label htmlFor="auto" className="text-sm">Агент отвечает сам</Label>
               <div className="ml-auto flex gap-2">
-                <Button size="sm" variant="outline" onClick={() => patch({ status: "declined" })}><XCircle />Отказ</Button>
-                <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700" onClick={() => patch({ status: "taken" })}><CheckCircle2 />Берём</Button>
+                <Button size="sm" variant="outline" disabled={saving} onClick={() => patch({ status: "declined" })}><XCircle />Отказ</Button>
+                <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700" disabled={saving} onClick={() => patch({ status: "taken" })}><CheckCircle2 />Берём</Button>
               </div>
             </div>
           </div>

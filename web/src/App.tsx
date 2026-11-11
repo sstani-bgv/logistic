@@ -1,24 +1,44 @@
 import { useEffect, useState } from "react"
-import { BookOpenCheck, MessagesSquare, PackageSearch, Truck as TruckIcon, Radar, Clock, Filter, Sparkles } from "lucide-react"
+import { BookOpenCheck, MessagesSquare, PackageSearch, Truck as TruckIcon, Radar, Clock, Filter, Sparkles, Settings as SettingsIcon, Users as UsersIcon, LogOut } from "lucide-react"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
-import { usePoll, ago, type Stats } from "@/lib/api"
+import { api, usePoll, ago, AUTH_EVENT, type Stats, type User } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import LoadsPage from "@/pages/Loads"
 import DialogsPage from "@/pages/Dialogs"
 import TrucksPage from "@/pages/Trucks"
 import KnowledgePage from "@/pages/Knowledge"
+import LoginPage from "@/pages/Login"
+import SettingsPage from "@/pages/Settings"
+import UsersPage from "@/pages/Users"
 
 const NAV = [
   { id: "loads", label: "Грузы", icon: PackageSearch },
   { id: "dialogs", label: "Переговоры", icon: MessagesSquare },
   { id: "trucks", label: "Машины", icon: TruckIcon },
   { id: "knowledge", label: "База знаний", icon: BookOpenCheck },
+  { id: "settings", label: "Настройки", icon: SettingsIcon, owner: true },
+  { id: "users", label: "Сотрудники", icon: UsersIcon, owner: true },
 ] as const
 type Page = (typeof NAV)[number]["id"]
 
 export default function App() {
-  const [page, setPage] = useState<Page>(() => (NAV.find((n) => n.id === location.hash.slice(1))?.id ?? "loads"))
+  const [me, setMe] = useState<User | null | undefined>(undefined)
+  useEffect(() => {
+    api<User>("/me").then(setMe).catch(() => setMe(null))
+    const out = () => setMe(null)
+    window.addEventListener(AUTH_EVENT, out)
+    return () => window.removeEventListener(AUTH_EVENT, out)
+  }, [])
+  if (me === undefined) return null
+  if (!me) return <><LoginPage onLogin={setMe} /><Toaster position="bottom-right" /></>
+  const logout = async () => { await api("/logout", { method: "POST" }).catch(() => {}); setMe(null) }
+  return <Shell me={me} onLogout={logout} />
+}
+
+function Shell({ me, onLogout }: { me: User; onLogout: () => void }) {
+  const nav = NAV.filter((n) => !("owner" in n) || me.role === "owner")
+  const [page, setPage] = useState<Page>(() => (nav.find((n) => n.id === location.hash.slice(1))?.id ?? "loads"))
   useEffect(() => { location.hash = page }, [page])
   const { data: s } = usePoll<Stats>("/stats", 4000)
 
@@ -36,7 +56,7 @@ export default function App() {
             </div>
           </div>
           <nav className="flex flex-col gap-1">
-            {NAV.map((n) => (
+            {nav.map((n) => (
               <button key={n.id} onClick={() => setPage(n.id)}
                 className={cn("flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors",
                   page === n.id ? "bg-accent font-medium text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground")}>
@@ -49,6 +69,10 @@ export default function App() {
           <div className="mt-auto rounded-lg border bg-muted/40 p-3 text-xs">
             <div className="mb-1 flex items-center gap-1.5 font-medium"><span className="size-2 animate-pulse rounded-full bg-emerald-500" />Мониторинг АТИ включён</div>
             <div className="text-muted-foreground">{s?.me?.name ? `Аккаунт: ${s.me.name}` : "Подключение…"}</div>
+          </div>
+          <div className="mt-3 flex items-center justify-between gap-2 px-1 text-sm">
+            <div className="min-w-0 truncate"><span className="font-medium">{me.login}</span> <span className="text-xs text-muted-foreground">{me.role === "owner" ? "владелец" : "логист"}</span></div>
+            <button onClick={onLogout} className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="Выйти" title="Выйти"><LogOut className="size-4" /></button>
           </div>
         </aside>
 
@@ -67,6 +91,8 @@ export default function App() {
               {page === "dialogs" && <DialogsPage />}
               {page === "trucks" && <TrucksPage />}
               {page === "knowledge" && <KnowledgePage />}
+              {page === "settings" && me.role === "owner" && <SettingsPage />}
+              {page === "users" && me.role === "owner" && <UsersPage me={me} />}
             </div>
             <aside className="hidden w-72 shrink-0 2xl:block">
               <div className="sticky top-6">

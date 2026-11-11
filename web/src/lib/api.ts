@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 export type Reason = { t: string; d: number; kind: "plus" | "minus" | "block" | "info" }
 export type Metrics = { dist: number; dead: number; net: number | null; gross: number | null; per_km: number | null; money: string }
@@ -35,23 +35,53 @@ export type Stats = {
   rules: number; hours_saved: number; me: { name?: string; ati_id?: string }; log: LogItem[]
 }
 
+export type DialogPatchResult = { ok: boolean; truck?: Truck | null }
+export type Role = "owner" | "logist"
+export type User = { id: number; login: string; role: Role; active: number }
+export type Action = { id: number; ts: number; user_id: number | null; login: string; action: string; ref: string | null; detail: string | null }
+export type Settings = {
+  vat: number; min_rate_km: number; threshold: number; scan_minutes: number; pages: number; send_enabled: boolean
+  auto_start: boolean; auto_score: number; auto_per_cycle: number; auto_daily: number; default_goal: string
+  [k: string]: unknown
+}
+
+export class ApiError extends Error {
+  status: number
+  constructor(message: string, status: number) { super(message); this.status = status }
+}
+
+/** Сессия истекла или вход не выполнен — App показывает страницу входа. */
+export const AUTH_EVENT = "auth:required"
+
 export async function api<T = unknown>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<T> {
   const r = await fetch(`/api${path}`, {
     method: opts.method ?? (opts.body ? "POST" : "GET"),
     headers: opts.body ? { "Content-Type": "application/json" } : undefined,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
+    credentials: "same-origin",
   })
   if (!r.ok) {
     const e = await r.json().catch(() => ({}))
-    throw new Error(e.detail ?? `Ошибка ${r.status}`)
+    if (r.status === 401 && path !== "/login") window.dispatchEvent(new Event(AUTH_EVENT))
+    const detail = Array.isArray(e.detail) ? e.detail.map((x: { msg?: string }) => x.msg).join("; ") : e.detail
+    throw new ApiError(detail ?? `Ошибка ${r.status}`, r.status)
   }
   return r.json()
 }
 
-/** Данные с автообновлением: биржа и переписка живут своей жизнью. */
+export const errText = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+/** Данные с автообновлением: биржа и переписка живут своей жизнью. Устаревшие ответы отбрасываются. */
 export function usePoll<T>(path: string, ms = 5000) {
   const [data, setData] = useState<T | null>(null)
-  const reload = useCallback(() => api<T>(path).then(setData).catch(() => {}), [path])
+  const seq = useRef(0)
+  const reload = useCallback(async () => {
+    const n = ++seq.current
+    try {
+      const d = await api<T>(path)
+      if (n === seq.current) setData(d)
+    } catch { /* сеть/401 — следующий цикл повторит, 401 обработает App */ }
+  }, [path])
   useEffect(() => {
     reload()
     const t = setInterval(reload, ms)
@@ -61,7 +91,10 @@ export function usePoll<T>(path: string, ms = 5000) {
 }
 
 export const rub = (n?: number | null) => (n ? `${Math.round(n).toLocaleString("ru-RU")} ₽` : "—")
-export const ddmm = (s?: string) => (s ? new Date(s).toLocaleDateString("ru-RU", { day: "numeric", month: "short" }) : "")
+export const ddmm = (s?: string | null) => {
+  const d = s ? new Date(`${s.slice(0, 10)}T00:00:00`) : null // локальная полночь, без сдвига UTC
+  return d && !isNaN(d.getTime()) ? d.toLocaleDateString("ru-RU", { day: "numeric", month: "short" }) : ""
+}
 export const ago = (ts: number) => {
   if (ts > 1e12) ts /= 1e6 // мессенджер АТИ отдаёт микросекунды
   const m = Math.round((Date.now() / 1000 - ts) / 60)

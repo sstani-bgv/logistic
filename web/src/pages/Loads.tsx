@@ -9,7 +9,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { api, usePoll, rub, ddmm, ago, atiLink, type Load, type Truck } from "@/lib/api"
+import { api, errText, usePoll, rub, ddmm, ago, atiLink, type Load, type Truck } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 const VIEWS = [
@@ -142,7 +142,7 @@ function RejectDialog({ load, onClose, onDone }: { load: Load | null; onClose: (
       const res = await api<{ rule: { text: string } | null }>(`/loads/${load.id}/reject`, { body: { reason, learn } })
       toast.success("Груз убран", { description: res.rule ? `В базу знаний: «${res.rule.text}»` : undefined })
       setReason(""); onClose(); onDone()
-    } catch (e) { toast.error(String(e)) } finally { setBusy(false) }
+    } catch (e) { toast.error(errText(e)) } finally { setBusy(false) }
   }
   return (
     <Dialog open={!!load} onOpenChange={(o) => !o && onClose()}>
@@ -180,7 +180,7 @@ function DelegateDialog({ load, onClose, onDone }: { load: Load | null; onClose:
       await api(`/loads/${load.id}/agent`, { body: { goal: goal ?? st?.default_goal } })
       toast.success("Агент взял груз в работу", { description: "Переписка — во вкладке «Переговоры»" })
       setGoal(null); onClose(); onDone()
-    } catch (e) { toast.error(String(e)) } finally { setBusy(false) }
+    } catch (e) { toast.error(errText(e)) } finally { setBusy(false) }
   }
   return (
     <Dialog open={!!load} onOpenChange={(o) => !o && onClose()}>

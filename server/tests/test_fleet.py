@@ -2,7 +2,6 @@ import json
 from datetime import date, timedelta
 
 import pytest
-from fastapi.testclient import TestClient
 
 import fleet
 import main
@@ -22,8 +21,8 @@ def clean():
 
 
 @pytest.fixture
-def client():
-    return TestClient(main.app)  # без with: lifespan (мониторинг АТИ) не запускается
+def client(make_client):
+    return make_client("logist")
 
 
 def truck(name="Volvo", status="free", free_from=None, active=1, city="Санкт-Петербург"):

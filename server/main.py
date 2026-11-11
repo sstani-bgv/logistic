@@ -8,13 +8,14 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import agent
 import ati
+import auth
 import fleet
 from scoring import score
 
@@ -37,6 +38,8 @@ create table if not exists messages(id text primary key, dialog_id int, mine int
 create table if not exists kv(k text primary key, v text);
 create table if not exists scans(ts real, truck_id int, seen int, total int);
 """)
+
+auth.init(DB)
 
 
 def migrate():
@@ -220,7 +223,90 @@ async def lifespan(app):
         t.cancel()
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan, dependencies=[Depends(auth.make_guard(DB))])
+
+
+# ---------- вход и пользователи ----------
+class Login(BaseModel):
+    login: str
+    password: str
+
+
+@app.get("/api/health")
+def health():
+    return {"ok": True}
+
+
+@app.post("/api/login")
+def do_login(b: Login, resp: Response):
+    token, u = auth.login(DB, b.login, b.password)
+    auth.set_cookie(resp, token)
+    return auth.public_user(u)
+
+
+@app.post("/api/logout")
+def do_logout(request: Request, resp: Response):
+    auth.logout(DB, request.cookies.get(auth.COOKIE))
+    resp.delete_cookie(auth.COOKIE, path="/")
+    return {"ok": True}
+
+
+@app.get("/api/me")
+def me():
+    return auth.public_user(auth.current())
+
+
+class NewUser(BaseModel):
+    login: str
+    password: str
+    role: str = "logist"
+
+
+class UserPatch(BaseModel):
+    role: str | None = None
+    active: bool | None = None
+    password: str | None = None
+
+
+@app.get("/api/users", dependencies=[Depends(auth.require_owner)])
+def users():
+    return [auth.public_user(u) for u in q("select * from users order by id")]
+
+
+@app.post("/api/users", dependencies=[Depends(auth.require_owner)])
+def add_user(b: NewUser):
+    uid = auth.create_user(DB, b.login, b.password, b.role)
+    auth.record(DB, "user_add", uid, f"{b.login} ({b.role})")
+    return auth.public_user(q("select * from users where id=?", uid)[0])
+
+
+@app.patch("/api/users/{uid}", dependencies=[Depends(auth.require_owner)])
+def patch_user(uid: int, b: UserPatch):
+    u = q("select * from users where id=?", uid)
+    if not u:
+        raise HTTPException(404)
+    demote = (b.role and b.role != "owner") or b.active is False
+    if u[0]["role"] == "owner" and demote and not auth.owners_left(DB, uid):
+        raise HTTPException(400, "Нельзя убрать последнего владельца")
+    if b.role:
+        auth.check_role(b.role)
+        DB.execute("update users set role=? where id=?", (b.role, uid))
+    if b.active is not None:
+        DB.execute("update users set active=? where id=?", (int(b.active), uid))
+        if not b.active:
+            auth.drop_sessions(DB, uid)
+    if b.password:
+        auth.check_password(b.password)
+        DB.execute("update users set password_hash=? where id=?", (auth.PH.hash(b.password), uid))
+        auth.drop_sessions(DB, uid)
+    auth.record(DB, "user_edit", uid, json.dumps({k: v for k, v in b.model_dump().items() if v is not None and k != "password"}
+                                                 | ({"password": "сменён"} if b.password else {}), ensure_ascii=False))
+    return auth.public_user(q("select * from users where id=?", uid)[0])
+
+
+@app.get("/api/actions", dependencies=[Depends(auth.require_owner)])
+def actions(limit: int = 200):
+    return q("select * from actions order by ts desc limit ?", min(limit, 1000))
 
 
 # ---------- API ----------
@@ -265,6 +351,8 @@ async def reject(lid: str, b: Reason):
     if not l:
         raise HTTPException(404)
     DB.execute("update loads set status='rejected', reject_reason=? where id=?", (b.reason, lid))
+    who = auth.record(DB, "load_reject", lid, b.reason)
+    log(f"{who}: отказ по грузу — {b.reason or 'без причины'}")
     rule = None
     if b.learn and b.reason.strip():
         rule = await add_rule_from_text(b.reason, json.loads(l[0]["raw"]), json.loads(l[0]["metrics"]), lid)
@@ -289,6 +377,7 @@ async def start_agent(lid: str, b: Goal):
     l = q("select * from loads where id=?", lid)
     if not l:
         raise HTTPException(404)
+    auth.record(DB, "agent_start", lid, b.goal)
     try:
         return await start_dialog(l[0], b.goal or settings()["default_goal"])
     except ValueError as e:
@@ -365,6 +454,7 @@ async def send_manual(did: int, b: Text):
     msg = await ati.send(d["chat_id"], b.text)
     DB.execute("insert or ignore into messages values(?,?,?,?,?)", (msg["id"], did, 1, b.text, msg["ts"]))
     DB.execute("update dialogs set last_ts=max(last_ts,?), updated=? where id=?", (msg["ts"], time.time(), did))
+    auth.record(DB, "message_send", did, b.text[:500])
     return {"ok": True}
 
 
@@ -388,10 +478,14 @@ async def patch_dialog(did: int, b: DStatus):
         DB.execute("update dialogs set status=?, updated=? where id=?", (b.status, time.time(), did))
         lid = d[0]["load_id"]
         DB.execute("update loads set status=? where id=?", ({"taken": "taken", "declined": "declined"}.get(b.status, "dialog"), lid))
+        who = auth.record(DB, f"dialog_{b.status}", did)
+        if b.status in ("taken", "declined"):
+            log(f"{who}: {'взяли груз' if b.status == 'taken' else 'отказались'} (диалог #{did})", "info")
         if b.status == "taken" and d[0]["status"] != "taken":
             truck = await occupy_truck(lid)
     if b.auto is not None:
         DB.execute("update dialogs set auto=? where id=?", (int(b.auto), did))
+        auth.record(DB, "dialog_auto_on" if b.auto else "dialog_auto_off", did)
     return {"ok": True, "truck": truck}
 
 
@@ -459,6 +553,7 @@ async def add_truck(b: Truck):
                " values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                (b.name, b.driver, c["CityName"], c["CityId"], c["Latitude"], c["Longitude"], b.radius, b.body_mask,
                 b.body_name, b.height, b.capacity, ff, int(b.active), st))
+    auth.record(DB, "truck_add", None, b.name)
     return {"ok": True}
 
 
@@ -474,6 +569,7 @@ async def edit_truck(tid: int, b: Truck):
                "height=?,capacity=?,free_from=?,active=?,status=? where id=?",
                (b.name, b.driver, c["CityName"], c["CityId"], c["Latitude"], c["Longitude"], b.radius, b.body_mask,
                 b.body_name, b.height, b.capacity, ff, int(b.active), st, tid))
+    auth.record(DB, "truck_edit", tid, b.name)
     rescore()
     return {"ok": True}
 
@@ -513,6 +609,7 @@ def set_truck_status(tid: int, b: TruckStatus):
         raise HTTPException(404)
     free_from = normalize_free_from(b.status, t[0]["free_from"])
     DB.execute("update trucks set status=?, free_from=? where id=?", (b.status, free_from, tid))
+    auth.record(DB, f"truck_{b.status}", tid)
     rescore()
     return q("select * from trucks where id=?", tid)[0]
 
@@ -530,7 +627,9 @@ def rules():
 
 @app.post("/api/rules")
 async def add_rule(b: Text):
-    return await add_rule_from_text(b.text)
+    r = await add_rule_from_text(b.text)
+    auth.record(DB, "rule_add", r["id"], r["text"])
+    return r
 
 
 class RulePatch(BaseModel):
@@ -540,6 +639,7 @@ class RulePatch(BaseModel):
 @app.patch("/api/rules/{rid}")
 def patch_rule(rid: int, b: RulePatch):
     DB.execute("update rules set active=? where id=?", (int(b.active), rid))
+    auth.record(DB, "rule_on" if b.active else "rule_off", rid)
     rescore()
     return {"ok": True}
 
@@ -547,6 +647,7 @@ def patch_rule(rid: int, b: RulePatch):
 @app.delete("/api/rules/{rid}")
 def del_rule(rid: int):
     DB.execute("delete from rules where id=?", (rid,))
+    auth.record(DB, "rule_delete", rid)
     rescore()
     return {"ok": True}
 
@@ -556,11 +657,12 @@ def get_settings():
     return settings()
 
 
-@app.put("/api/settings")
+@app.put("/api/settings", dependencies=[Depends(auth.require_owner)])
 def put_settings(b: dict):
     for k, v in b.items():
         if k in DEFAULTS:
             DB.execute("insert into kv values(?,?) on conflict(k) do update set v=excluded.v", (k, json.dumps(v)))
+    auth.record(DB, "settings", None, json.dumps({k: v for k, v in b.items() if k in DEFAULTS}, ensure_ascii=False)[:1000])
     rescore()
     return settings()
 
@@ -571,4 +673,6 @@ if DIST.exists():
 
     @app.get("/{path:path}")
     def spa(path: str):
+        if path.startswith("api/"):
+            raise HTTPException(404)
         return FileResponse(DIST / "index.html")

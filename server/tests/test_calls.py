@@ -217,3 +217,112 @@ def test_webhook_disabled_without_secret(monkeypatch):
     monkeypatch.setattr(main, "WEBHOOK_SECRET", "")
     assert TestClient(main.app).post("/api/telephony/webhook/", data={}).status_code in (403, 404, 405)
     assert TestClient(main.app).post("/api/telephony/webhook/x", data={}).status_code == 403
+
+
+# --- после ревью звонков и безопасности ---
+
+def ringing(did, pid="p1", created=None, **kw):
+    main.DB.execute("insert into calls(dialog_id,phone,status,created,provider_id,transcript,duration) values(?,?,?,?,?,?,?)",
+                    (did, "+79215551234", kw.get("status", "ringing"), created or time.time(), pid,
+                     kw.get("transcript"), kw.get("duration", 0)))
+    return main.q("select id from calls order by id desc limit 1")[0]["id"]
+
+
+def test_duplicate_transcript_runs_agent_once(clean):
+    did = mk_dialog()
+    cid = ringing(did)
+    res = {"status": "done", "duration": 40, "transcript": "Заказчик: да"}
+    asyncio.run(main.apply_call_result(cid, res))
+    asyncio.run(main.apply_call_result(cid, res))
+    assert clean == [did] and len(main.q("select * from messages")) == 1
+
+
+def test_empty_values_do_not_overwrite(clean):
+    did = mk_dialog()
+    cid = ringing(did)
+    asyncio.run(main.apply_call_result(cid, {"status": "done", "duration": 90, "transcript": "Заказчик: да"}))
+    asyncio.run(main.apply_call_result(cid, {"status": "done", "duration": 0, "transcript": "", "recording_url": ""}))
+    c = main.q("select * from calls")[0]
+    assert (c["transcript"], c["duration"], c["cost"]) == ("Заказчик: да", 90, 6)
+
+
+def test_done_not_downgraded(clean):
+    did = mk_dialog()
+    cid = ringing(did)
+    asyncio.run(main.apply_call_result(cid, {"status": "done", "duration": 30, "transcript": "Заказчик: да"}))
+    asyncio.run(main.apply_call_result(cid, {"status": "no_answer"}))
+    assert main.q("select status from calls")[0]["status"] == "done"
+
+
+def test_garbage_result_ignored(clean):
+    did = mk_dialog()
+    cid = ringing(did)
+    asyncio.run(main.apply_call_result(cid, {"status": "completed", "duration": "abc", "recording_url": 5}))
+    assert main.q("select status, duration from calls")[0] == {"status": "ringing", "duration": 0}
+    asyncio.run(main.apply_call_result(cid, ["not", "a", "dict"]))
+
+
+def test_stale_call_reaped(clean):
+    did = mk_dialog()
+    ringing(did, created=time.time() - 30 * 60)
+    asyncio.run(main.reap_stale_calls())
+    c = main.q("select * from calls")[0]
+    assert c["status"] == "failed" and c["error"] == "нет итога от телефонии"
+    assert "звонок уже идёт" not in (calls.blocked_reason(main.DB, ST, "+79215551234", did, time.time() + 3 * 3600) or "")
+
+
+def test_failed_before_telephony_not_counted():
+    did = mk_dialog()
+    for _ in range(3):
+        main.DB.execute("insert into calls(dialog_id,phone,status,created) values(?,?,?,?)",
+                        (did, "+79215551234", "failed", time.time()))
+    assert calls.blocked_reason(main.DB, ST, "+79215551234", did) is None
+
+
+def test_telephony_error_is_reported(make_client, monkeypatch):
+    class Broken:
+        async def start(self, call, ctx):
+            raise RuntimeError("ВАТС не настроена")
+    monkeypatch.setattr(main, "PHONE", Broken())
+    main.DB.execute("insert into kv values('call_hours', ?)", (json.dumps("00:00-24:00"),))
+    c = make_client("logist")
+    r = c.post(f"/api/dialogs/{mk_dialog()}/call")
+    assert r.status_code == 502 and "ВАТС не настроена" in r.json()["detail"]
+
+
+def test_ts_units():
+    now, did = time.time(), mk_dialog()
+    msg(did, 1, int((now - 20 * 60) * 1e3))  # миллисекунды
+    other = mk_dialog(load_id="L2")
+    msg(other, 1, int(now - 60))  # секунды, свежее — звонить рано
+    assert [d["id"] for d in calls.due_dialogs(main.DB, ST, now)] == [did]
+    assert calls.ts_unit(1.7e15) == 1e6 and calls.ts_unit(1.7e12) == 1e3 and calls.ts_unit(1.7e9) == 1
+
+
+def test_overnight_window_and_validation():
+    assert calls.in_window("22:00-06:00", at(23)) and calls.in_window("22:00-06:00", at(5))
+    assert not calls.in_window("22:00-06:00", at(12))
+    assert calls.valid_hours("09:00-19:00") and calls.valid_hours("00:00-24:00")
+    assert not calls.valid_hours("9-19") and not calls.valid_hours("10:00-10:00")
+
+
+def test_settings_reject_bad_hours(make_client):
+    c = make_client("owner")
+    assert c.put("/api/settings", json={"call_hours": "с утра"}).status_code == 400
+    assert c.put("/api/settings", json={"call_hours": "10:00-18:00"}).json()["call_hours"] == "10:00-18:00"
+
+
+def test_dnc_only_customer_lines():
+    assert not calls.wants_no_calls("Агент: если неудобно — не звоните нам, мы сами\nЗаказчик: хорошо")
+    assert calls.wants_no_calls("Заказчик: хватит звонить")
+    assert not calls.wants_no_calls("Заказчик: не звоните на этот номер, звоните Ивану")
+
+
+def test_recording_url_allowlist(monkeypatch):
+    monkeypatch.setenv("RECORDING_HOSTS", "vats.example.ru")
+    monkeypatch.delenv("MEGAFON_API_URL", raising=False)
+    with pytest.raises(ValueError, match="не в RECORDING_HOSTS"):
+        main.safe_recording_url("http://169.254.169.254/latest/meta-data")
+    monkeypatch.setenv("RECORDING_HOSTS", "localhost")
+    with pytest.raises(ValueError, match="внутренний адрес"):
+        main.safe_recording_url("http://localhost/x.mp3")

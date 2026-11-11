@@ -12,6 +12,8 @@ services:
     volumes:
       - data:/data            # data.db и записи звонков (recordings/)
     expose: ["8010"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
 
   caddy:
     image: caddy:2.10-alpine
@@ -24,13 +26,24 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on: [app]
+    security_opt: ["no-new-privileges:true"]
 
   backup:
     build: ./deploy/backup
     restart: unless-stopped
-    env_file: .env
+    # только то, что нужно бэкапу — ключи LLM/ВАТС/АТИ сюда не попадают
     environment:
       TZ: Europe/Moscow
+      BACKUP_AT: ${BACKUP_AT:-03:30}
+      KEEP_DAYS: ${KEEP_DAYS:-14}
+      BACKUP_BUCKET: ${BACKUP_BUCKET:-}
+      RCLONE_CONFIG_S3_TYPE: ${RCLONE_CONFIG_S3_TYPE:-}
+      RCLONE_CONFIG_S3_PROVIDER: ${RCLONE_CONFIG_S3_PROVIDER:-}
+      RCLONE_CONFIG_S3_ENDPOINT: ${RCLONE_CONFIG_S3_ENDPOINT:-}
+      RCLONE_CONFIG_S3_ACCESS_KEY_ID: ${RCLONE_CONFIG_S3_ACCESS_KEY_ID:-}
+      RCLONE_CONFIG_S3_SECRET_ACCESS_KEY: ${RCLONE_CONFIG_S3_SECRET_ACCESS_KEY:-}
+      RCLONE_CONFIG_S3_SERVER_SIDE_ENCRYPTION: ${RCLONE_CONFIG_S3_SERVER_SIDE_ENCRYPTION:-}
+    security_opt: ["no-new-privileges:true"]
     volumes:
       - data:/data
       - backups:/backups

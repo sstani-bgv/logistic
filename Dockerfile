@@ -21,4 +21,5 @@ RUN useradd -r -u 10001 app && mkdir -p /data && chown app /data
 USER app
 EXPOSE 8010
 HEALTHCHECK --interval=30s --timeout=5s CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8010/api/health')"
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8010", "--proxy-headers", "--forwarded-allow-ips", "*"]
+# --no-access-log: в путях вебхука секрет, в логи его не пишем
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8010", "--proxy-headers", "--forwarded-allow-ips", "*", "--no-access-log"]

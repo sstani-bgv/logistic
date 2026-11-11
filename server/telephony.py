@@ -81,7 +81,11 @@ def parse_megafon(form):
     if (form.get("cmd") or "").lower() != "history":
         return None, None
     status = MEGAFON_STATUS.get((form.get("status") or "").lower().replace("_", ""), "failed")
-    return form.get("callid"), {"status": status, "duration": int(form.get("duration") or 0),
+    try:
+        duration = int(float(form.get("duration") or 0))
+    except ValueError:
+        duration = 0
+    return form.get("callid"), {"status": status, "duration": duration,
                                 "recording_url": form.get("link") or None}
 
 

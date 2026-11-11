@@ -16,9 +16,12 @@ ROLES = ("owner", "logist")
 COOKIE = "session"
 SESSION_DAYS = 30
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "0") == "1"  # на проде за HTTPS — 1
-LOCK_FAILS, LOCK_SECONDS = 5, 15 * 60  # 5 неверных паролей — пауза 15 минут на логин
+LOCK_FAILS, LOCK_SECONDS = 5, 15 * 60  # 5 неверных паролей на логин с одного адреса — пауза 15 минут
+IP_FAILS = 20  # и не больше 20 неверных паролей с одного адреса на любые логины
+MAX_TRACKED = 10_000
 
 PH = PasswordHasher()
+DUMMY_HASH = PH.hash("timing-equalizer")  # для несуществующего логина тоже считаем argon2 — не выдаём, есть ли логин
 CURRENT: ContextVar[dict | None] = ContextVar("current_user", default=None)
 PUBLIC = {"/api/login", "/api/logout", "/api/health"}
 PUBLIC_PREFIX = ("/api/telephony/",)  # вебхуки ВАТС и голосового бота — со своим секретом в пути
@@ -68,28 +71,43 @@ def create_user(db, login, password, role):
     return cur.lastrowid
 
 
-def _locked(login):
+def _recent(key):
     now = time.time()
-    FAILS[login] = [t for t in FAILS.get(login, []) if now - t < LOCK_SECONDS]
-    return len(FAILS[login]) >= LOCK_FAILS
+    hits = [t for t in FAILS.get(key, []) if now - t < LOCK_SECONDS]
+    if hits:
+        FAILS[key] = hits
+    else:
+        FAILS.pop(key, None)
+    return len(hits)
 
 
-def login(db, login, password):
-    """-> (token, user). Одинаковый ответ на «нет логина» и «неверный пароль»."""
+def _fail(*keys):
+    if len(FAILS) > MAX_TRACKED:  # не даём раздуть память перебором случайных логинов
+        for k in list(FAILS)[: len(FAILS) // 2]:
+            FAILS.pop(k, None)
+    for k in keys:
+        FAILS.setdefault(k, []).append(time.time())
+
+
+def login(db, login, password, ip=""):
+    """-> (token, user). Одинаковый ответ и время на «нет логина» и «неверный пароль»."""
     key = (login or "").strip().lower()
-    if _locked(key):
+    pair, by_ip = f"{key}|{ip}", f"ip|{ip}"
+    if _recent(pair) >= LOCK_FAILS or _recent(by_ip) >= IP_FAILS:
         raise HTTPException(429, "Слишком много попыток входа, подождите 15 минут")
     row = db.execute("select * from users where login=?", (key,)).fetchone()
     ok = False
-    if row and row["active"]:
-        try:
+    try:
+        if row and row["active"]:
             ok = PH.verify(row["password_hash"], password or "")
-        except (VerifyMismatchError, VerificationError, InvalidHashError):
-            ok = False
+        else:
+            PH.verify(DUMMY_HASH, password or "")
+    except (VerifyMismatchError, VerificationError, InvalidHashError):
+        ok = False
     if not ok:
-        FAILS.setdefault(key, []).append(time.time())
+        _fail(pair, by_ip)
         raise HTTPException(401, "Неверный логин или пароль")
-    FAILS.pop(key, None)
+    FAILS.pop(pair, None)
     if PH.check_needs_rehash(row["password_hash"]):
         db.execute("update users set password_hash=? where id=?", (PH.hash(password), row["id"]))
     token = secrets.token_urlsafe(32)

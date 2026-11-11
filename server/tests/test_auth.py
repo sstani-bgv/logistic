@@ -107,3 +107,29 @@ def test_cli_create_owner(tmp_path):
     assert r.returncode == 0, r.stderr
     r = subprocess.run([sys.executable, "manage.py", "create-owner", "admin"], capture_output=True, text=True, env=env)
     assert r.returncode != 0 and "занят" in r.stderr
+
+
+def test_docs_closed(anon):
+    for p in ("/docs", "/redoc", "/openapi.json"):
+        r = anon.get(p)
+        assert r.status_code == 404 or "openapi" not in r.text.lower(), p
+
+
+def test_ip_lockout_across_logins(make_client, anon):
+    make_client("logist", "real")
+    for i in range(auth.IP_FAILS):
+        anon.post("/api/login", json={"login": f"guess{i}", "password": "x"})
+    assert anon.post("/api/login", json={"login": "real", "password": "password123"}).status_code == 429
+
+
+def test_long_password_rejected(anon):
+    assert anon.post("/api/login", json={"login": "a", "password": "x" * 1000}).status_code == 422
+
+
+def test_spa_static_no_traversal(anon):
+    import main as m
+    if not m.DIST.exists():
+        pytest.skip("фронт не собран")
+    assert anon.get("/vite.svg").headers["content-type"].startswith("image/svg")
+    r = anon.get("/..%2F..%2Fserver%2Fmain.py")
+    assert "import" not in r.text

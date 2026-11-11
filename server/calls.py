@@ -13,7 +13,10 @@ NUMBER_GAP = 2 * 3600  # одному номеру — не чаще раза в
 PER_LOAD = 2  # не больше 2 попыток на груз
 DEFAULTS = {"call_enabled": False, "call_after_min": 15, "call_hours": "09:00-19:00", "call_daily": 20}
 ACTIVE = ("queued", "ringing", "talking")  # звонок ещё идёт
-DNC_PHRASES = re.compile(r"не\s+звон(ите|и|ить)|больше\s+не\s+звон|уберите\s+(мой\s+)?номер|не\s+беспокойте", re.I)
+DNC_PHRASES = re.compile(r"(больше\s+)?не\s+звон(?:ите|ить|и)\b(?!\s+(на\s+этот|сюда,?\s+звоните|по\s+этому))"
+                         r"|(прекратите|хватит|перестаньте)\s+звонить|(уберите|удалите)\s+(мой\s+|наш\s+)?номер"
+                         r"|не\s+беспокойте|внесите\s+в\s+(чёрный|черный)\s+список", re.I)
+REAL = "not (status='failed' and provider_id is null)"  # попытка, которая не дошла до телефонии, не считается
 
 SCHEMA = """
 create table if not exists calls(id integer primary key, dialog_id int, phone text, started real, duration int default 0,
@@ -51,18 +54,31 @@ def phone_of(load):
     return None
 
 
-def parse_hours(s):
-    m = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})\s*", str(s or ""))
+HOURS_RE = re.compile(r"\s*(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})\s*")
+
+
+def valid_hours(s):
+    m = HOURS_RE.fullmatch(str(s or ""))
     if not m:
-        return (9, 0), (19, 0)
+        return False
     a, b, c, d = map(int, m.groups())
+    return a <= 24 and c <= 24 and b < 60 and d < 60 and (a, b) != (c, d)
+
+
+def parse_hours(s):
+    if not valid_hours(s):
+        return (9, 0), (19, 0)
+    a, b, c, d = map(int, HOURS_RE.fullmatch(str(s)).groups())
     return (a, b), (c, d)
 
 
 def in_window(hours, now=None):
     t = datetime.fromtimestamp(now or time.time(), MSK)
-    (h1, m1), (h2, m2) = parse_hours(hours)
-    return (h1, m1) <= (t.hour, t.minute) < (h2, m2)
+    start, end = parse_hours(hours)
+    cur = (t.hour, t.minute)
+    if start < end:
+        return start <= cur < end
+    return cur >= start or cur < end  # окно через полночь, например 22:00-06:00
 
 
 def msk_day_start(now=None):
@@ -84,12 +100,12 @@ def blocked_reason(db, st, phone, dialog_id, now=None, manual=False):
     if db.execute("select 1 from calls where dialog_id=? and status in (%s)" % ",".join("?" * len(ACTIVE)),
                   (dialog_id, *ACTIVE)).fetchone():
         return "звонок уже идёт"
-    if db.execute("select count(*) from calls where dialog_id=?", (dialog_id,)).fetchone()[0] >= PER_LOAD:
+    if db.execute(f"select count(*) from calls where dialog_id=? and {REAL}", (dialog_id,)).fetchone()[0] >= PER_LOAD:
         return f"уже {PER_LOAD} попытки по этому грузу"
-    last = db.execute("select max(created) from calls where phone=?", (phone,)).fetchone()[0]
+    last = db.execute(f"select max(created) from calls where phone=? and {REAL}", (phone,)).fetchone()[0]
     if last and now - last < NUMBER_GAP:
         return "этому номеру звонили меньше 2 часов назад"
-    today = db.execute("select count(*) from calls where created>=?", (msk_day_start(now),)).fetchone()[0]
+    today = db.execute(f"select count(*) from calls where created>=? and {REAL}", (msk_day_start(now),)).fetchone()[0]
     if today >= st["call_daily"]:
         return f"дневной лимит звонков ({st['call_daily']}) исчерпан"
     return None
@@ -99,23 +115,29 @@ def due_dialogs(db, st, now=None):
     """Диалоги, где агент написал, а заказчик молчит дольше call_after_min (последнее сообщение — наше)."""
     now = now or time.time()
     edge = now - st["call_after_min"] * 60
-    rows = db.execute("""
+    rows = db.execute(f"""
         select d.* from dialogs d where d.status='waiting' and d.auto=1
           and exists (select 1 from messages m where m.dialog_id=d.id)
-          and (select m.mine from messages m where m.dialog_id=d.id order by m.ts desc limit 1)=1
-          and (select max(m.ts) from messages m where m.dialog_id=d.id) < ?
-        order by d.updated""", (ts_like(db, edge),)).fetchall()
+          and (select m.mine from messages m where m.dialog_id=d.id order by {TS_SEC} desc limit 1)=1
+          and (select max({TS_SEC}) from messages m where m.dialog_id=d.id) < ?
+        order by d.updated""", (edge,)).fetchall()
     return [dict(r) for r in rows]
 
 
-def ts_like(db, edge):
-    """В messages.ts АТИ кладёт микросекунды или секунды — сравниваем в тех же единицах."""
-    mx = db.execute("select max(ts) from messages").fetchone()[0] or 0
-    return edge * 1e6 if mx > 1e12 else edge
+# АТИ отдаёт ts в микросекундах, где-то бывают миллисекунды или секунды — приводим каждое значение к секундам
+TS_SEC = "(case when m.ts>1e14 then m.ts/1e6 when m.ts>1e11 then m.ts/1e3 else m.ts end)"
+
+
+def ts_unit(sample):
+    """Множитель секунд → единицы, в которых записан sample (по умолчанию — секунды)."""
+    v = sample or 0
+    return 1e6 if v > 1e14 else 1e3 if v > 1e11 else 1
 
 
 def wants_no_calls(transcript):
-    return bool(DNC_PHRASES.search(transcript or ""))
+    """Только по репликам заказчика: строки, не начинающиеся с «Агент:»."""
+    lines = [x for x in (transcript or "").splitlines() if not x.strip().lower().startswith(("агент:", "бот:"))]
+    return bool(DNC_PHRASES.search("\n".join(lines)))
 
 
 def cost(duration_sec, rub_per_min):

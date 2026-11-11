@@ -38,7 +38,9 @@ docker compose start app
 
 Текущая база перед восстановлением сохраняется как `data.db.before-restore-<время>`.
 
+В бэкапах переписка, записи и хэши паролей: бакет — приватный, по возможности с шифрованием (`RCLONE_CONFIG_S3_SERVER_SIDE_ENCRYPTION`).
+
 ## Звонки
 
-`TELEPHONY=megafon`, `MEGAFON_*`, `TELEPHONY_WEBHOOK_SECRET` (длинная случайная строка: `openssl rand -hex 24`).
+На проде обязательно `TELEPHONY=megafon` (по умолчанию `mock` — звонки только имитируются), `MEGAFON_*`, `TELEPHONY_WEBHOOK_SECRET` (не короче 32 символов: `openssl rand -hex 24`, иначе вебхук выключен), `RECORDING_HOSTS` — если записи отдаются не с хоста из `MEGAFON_API_URL`.
 В ВАТС адрес вебхука: `https://<SITE>/api/telephony/webhook/<секрет>`. Голосовой бот — сервис `voice` в compose, подключается после спайка.

@@ -11,10 +11,10 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import agent
 import ati
@@ -228,6 +228,11 @@ RECORDINGS = DATA_DIR / "recordings"
 CALL_RUB_PER_MIN = float(os.environ.get("CALL_RUB_PER_MIN", "3"))  # связь ВАТС
 SPEECH_RUB_PER_MIN = float(os.environ.get("SPEECH_RUB_PER_MIN", "0"))  # STT+TTS, уточнить по тарифу Yandex
 WEBHOOK_SECRET = os.environ.get("TELEPHONY_WEBHOOK_SECRET", "")
+if 0 < len(WEBHOOK_SECRET) < 32:
+    log("TELEPHONY_WEBHOOK_SECRET короче 32 символов — вебхук выключен (openssl rand -hex 24)", "error")
+    WEBHOOK_SECRET = ""
+MAX_RECORDING = 50 * 1024 * 1024
+STALE_CALL_MIN = 20  # без итога от телефонии дольше — считаем звонок несостоявшимся
 
 
 async def start_call(d, manual=False):
@@ -238,7 +243,8 @@ async def start_call(d, manual=False):
     why = calls.blocked_reason(DB, settings(), phone, d["id"], manual=manual)
     if why:
         return None, why
-    by = auth.current()["login"] if manual and auth.current() else "агент"
+    u = auth.current() if manual else None
+    by = u["login"] if u else "агент"
     cid = DB.execute("insert into calls(dialog_id,phone,status,created,by_login) values(?,?,?,?,?)",
                      (d["id"], phone, "queued", time.time(), by)).lastrowid
     call = q("select * from calls where id=?", cid)[0]
@@ -246,49 +252,83 @@ async def start_call(d, manual=False):
                                       f"{raw.get('unloading', {}).get('location', {}).get('city', '')}"}
     try:
         pid = await PHONE.start(call, ctx)
+        if not pid:
+            raise RuntimeError("телефония не вернула id звонка")
         DB.execute("update calls set provider_id=?, status=case when status='queued' then 'ringing' else status end,"
                    " started=? where id=?", (pid, time.time(), cid))
-    except Exception as e:
+    except Exception as e:  # не дозвонились до телефонии — попытка не считается (provider_id пустой)
         DB.execute("update calls set status='failed', error=? where id=?", (str(e)[:500], cid))
         log(f"Звонок по диалогу #{d['id']} не начался: {e}", "error")
+        return q("select * from calls where id=?", cid)[0], f"ошибка телефонии: {e}"
     log(f"{'Звоним' if not manual else by + ': звоним'} {phone} по диалогу #{d['id']}", "agent")
     return q("select * from calls where id=?", cid)[0], None
 
 
-async def apply_call_result(call_id, res, by_provider=False):
-    """Итог звонка от мока, вебхука ВАТС или голосового бота; несколько источников дополняют друг друга."""
+def clean_result(res):
+    """Итог от мока/ВАТС/бота → только известные поля разумных типов; мусор отбрасываем."""
+    if not isinstance(res, dict):
+        return {}
+    out = {}
+    if res.get("status") in calls.ACTIVE + telephony.FINAL:
+        out["status"] = res["status"]
+    try:
+        if res.get("duration") is not None:
+            out["duration"] = max(0, min(int(float(res["duration"])), 36000))
+    except (TypeError, ValueError):
+        pass
+    if isinstance(res.get("recording_url"), str) and res["recording_url"].startswith(("http://", "https://")):
+        out["recording_url"] = res["recording_url"][:2000]
+    if isinstance(res.get("transcript"), str) and res["transcript"].strip():
+        out["transcript"] = res["transcript"][:20000]
+    return out
+
+
+async def apply_call_result(call_id, res, by_provider=False, background=False):
+    """Итог звонка; источники (мок, вебхук ВАТС, голосовой бот) дополняют друг друга, повторы безопасны."""
     rows = q("select * from calls where provider_id=?" if by_provider else "select * from calls where id=?", str(call_id))
     if not rows:
         return None
-    c = rows[0]
+    c, new = rows[0], clean_result(res)
     was_final = c["status"] in telephony.FINAL
-    fields = {k: res[k] for k in ("status", "duration", "recording_url", "transcript") if res.get(k) is not None}
-    if was_final and fields.get("status") not in telephony.FINAL:
-        fields.pop("status", None)  # поздний «talking» не откатывает завершённый звонок
-    if "duration" in fields:
-        fields["cost"] = calls.cost(fields["duration"], CALL_RUB_PER_MIN + SPEECH_RUB_PER_MIN)
-    if fields:
-        DB.execute(f"update calls set {', '.join(f'{k}=?' for k in fields)} where id=?", (*fields.values(), c["id"]))
+    st = new.get("status")
+    if st and was_final and (st not in telephony.FINAL or
+                             (c["status"] == "done" and st != "done" and (c["transcript"] or c["duration"]))):
+        new.pop("status")  # не откатываем завершённый и не понижаем состоявшийся разговор
+    if "duration" in new:
+        new["duration"] = max(new["duration"], c["duration"] or 0)
+        new["cost"] = calls.cost(new["duration"], CALL_RUB_PER_MIN + SPEECH_RUB_PER_MIN)
+    fresh_transcript = new.get("transcript") not in (None, c["transcript"])
+    if not fresh_transcript:
+        new.pop("transcript", None)
+    if c["recording_url"] and c["recording_url"].startswith("/api/"):
+        new.pop("recording_url", None)  # запись уже скачана
+    if new:
+        DB.execute(f"update calls set {', '.join(f'{k}=?' for k in new)} where id=?", (*new.values(), c["id"]))
     c = q("select * from calls where id=?", c["id"])[0]
-    if fields.get("recording_url", "").startswith("http"):
-        spawn(fetch_recording(c["id"], fields["recording_url"]))
-    if c["status"] in telephony.FINAL and (not was_final or "transcript" in fields):
-        await finish_call(c, new_transcript="transcript" in fields)
+    if "recording_url" in new:
+        spawn(fetch_recording(c["id"], new["recording_url"]))
+    if c["status"] in telephony.FINAL and (not was_final or fresh_transcript):
+        job = finish_call(c, fresh_transcript)
+        if background:
+            spawn(job)  # вебхук отвечает сразу, агент работает в фоне — провайдер не ретраит по таймауту
+        else:
+            await job
     return c
 
 
-async def finish_call(c, new_transcript):
+async def finish_call(c, fresh_transcript):
     d = q("select * from dialogs where id=?", c["dialog_id"])
     if not d:
         return
     d = d[0]
     m, s = divmod(int(c["duration"] or 0), 60)
     log(f"Звонок {c['phone']}: {c['status']}, {m}:{s:02d}, {c['cost'] or 0} ₽", "info")
-    have = q("select 1 from messages where id=?", f"call-{c['id']}")
-    if not c["transcript"] or (have and not new_transcript):
+    have = q("select ts from messages where id=?", f"call-{c['id']}")
+    if not c["transcript"] or (have and not fresh_transcript):
         return  # расшифровки нет или она уже в переписке
+    ts = have[0]["ts"] if have else msg_now(d["id"])
     DB.execute("insert or replace into messages(id,dialog_id,mine,text,ts,kind) values(?,?,?,?,?,?)",
-               (f"call-{c['id']}", d["id"], 0, calls.call_message(c), msg_now(), "call"))
+               (f"call-{c['id']}", d["id"], 0, calls.call_message(c), ts, "call"))
     if calls.wants_no_calls(c["transcript"]):
         DB.execute("insert or ignore into do_not_call values(?,?,?,?)", (c["phone"], "попросили не звонить", time.time(), "агент"))
         log(f"{c['phone']} попросили не звонить — номер в стоп-листе", "info")
@@ -296,35 +336,81 @@ async def finish_call(c, new_transcript):
         await agent_step(d)  # facts/summary/status по расшифровке — тем же negotiate
 
 
-def msg_now():
-    """Метка времени в единицах, которые сейчас в messages (АТИ отдаёт микросекунды)."""
-    return int(calls.ts_like(DB, time.time()))
+def msg_now(dialog_id):
+    """Метка времени в тех же единицах, что у сообщений этого диалога (АТИ отдаёт микросекунды)."""
+    last = DB.execute("select max(ts) from messages where dialog_id=?", (dialog_id,)).fetchone()[0]
+    return int(time.time() * calls.ts_unit(last))
+
+
+def recording_hosts():
+    hosts = {h.strip().lower() for h in os.environ.get("RECORDING_HOSTS", "").split(",") if h.strip()}
+    api = os.environ.get("MEGAFON_API_URL", "")
+    if api:
+        hosts.add((httpx.URL(api).host or "").lower())
+    return hosts - {""}
+
+
+def safe_recording_url(url):
+    """Защита от SSRF: только хосты ВАТС из allowlist и только публичные адреса."""
+    import ipaddress
+    import socket
+    u = httpx.URL(url)
+    host = (u.host or "").lower()
+    if u.scheme not in ("https", "http") or host not in recording_hosts():
+        raise ValueError(f"хост {host or '?'} не в RECORDING_HOSTS")
+    for info in socket.getaddrinfo(host, u.port or (443 if u.scheme == "https" else 80)):
+        ip = ipaddress.ip_address(info[4][0])
+        if not ip.is_global:
+            raise ValueError(f"{host} указывает на внутренний адрес {ip}")
 
 
 async def fetch_recording(cid, url):
+    f = RECORDINGS / f"{cid}.mp3"
     try:
+        if f.exists():
+            DB.execute("update calls set recording_url=? where id=?", (f"/api/calls/{cid}/recording", cid))
+            return
+        await asyncio.to_thread(safe_recording_url, url)
         RECORDINGS.mkdir(parents=True, exist_ok=True)
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as c:
-            r = await c.get(url)
-            r.raise_for_status()
-        (RECORDINGS / f"{cid}.mp3").write_bytes(r.content)
+        tmp, size = f.with_suffix(".part"), 0
+        async with httpx.AsyncClient(timeout=60, follow_redirects=False) as c:
+            async with c.stream("GET", url) as r:
+                r.raise_for_status()
+                with open(tmp, "wb") as out:
+                    async for chunk in r.aiter_bytes():
+                        size += len(chunk)
+                        if size > MAX_RECORDING:
+                            raise ValueError("запись больше 50 МБ")
+                        out.write(chunk)
+        tmp.rename(f)
         DB.execute("update calls set recording_url=? where id=?", (f"/api/calls/{cid}/recording", cid))
     except Exception as e:
+        f.with_suffix(".part").unlink(missing_ok=True)
         log(f"Запись звонка #{cid} не скачалась: {e}", "error")
 
 
 PHONE = telephony.make(apply_call_result)
 
 
+async def reap_stale_calls():
+    """Звонок без итога дольше STALE_CALL_MIN (рестарт, потерянный вебхук) не должен блокировать диалог навсегда."""
+    edge = time.time() - STALE_CALL_MIN * 60
+    for c in q("select * from calls where status in (%s) and created<?" % ",".join("?" * len(calls.ACTIVE)),
+               *calls.ACTIVE, edge):
+        DB.execute("update calls set error=? where id=?", ("нет итога от телефонии", c["id"]))
+        await apply_call_result(c["id"], {"status": "done" if c["transcript"] else "failed"})
+
+
 async def call_loop():
-    """Раз в минуту: молчат в чате дольше call_after_min — звоним (в окне, в лимитах)."""
+    """Раз в минуту: закрыть зависшие звонки; молчат в чате дольше call_after_min — звоним (в окне, в лимитах)."""
     while True:
         try:
+            await reap_stale_calls()
             st = settings()
             if st["call_enabled"] and calls.in_window(st["call_hours"]):
                 for d in calls.due_dialogs(DB, st):
                     call, why = await start_call(d)
-                    if why and "лимит" in why:
+                    if why and (why.startswith("дневной лимит") or why.startswith("ошибка телефонии")):
                         break
         except Exception as e:
             log(f"Ошибка планировщика звонков: {e}", "error")
@@ -339,19 +425,21 @@ async def lifespan(app):
         log(f"АТИ API недоступен: {e}", "error")
     for d in q("select * from dialogs where status='writing'"):  # дожать прерванные
         spawn(agent_step(d))
+    await reap_stale_calls()
     tasks = [asyncio.create_task(monitor()), asyncio.create_task(poll_dialogs()), asyncio.create_task(call_loop())]
     yield
     for t in tasks:
         t.cancel()
 
 
-app = FastAPI(lifespan=lifespan, dependencies=[Depends(auth.make_guard(DB))])
+app = FastAPI(lifespan=lifespan, dependencies=[Depends(auth.make_guard(DB))],
+              docs_url=None, redoc_url=None, openapi_url=None)  # схему API наружу не светим
 
 
 # ---------- вход и пользователи ----------
 class Login(BaseModel):
-    login: str
-    password: str
+    login: str = Field(max_length=128)
+    password: str = Field(max_length=128)
 
 
 @app.get("/api/health")
@@ -360,8 +448,8 @@ async def health():
 
 
 @app.post("/api/login")
-async def do_login(b: Login, resp: Response):
-    token, u = auth.login(DB, b.login, b.password)
+async def do_login(b: Login, request: Request, resp: Response):
+    token, u = auth.login(DB, b.login, b.password, request.client.host if request.client else "")
     auth.set_cookie(resp, token)
     return auth.public_user(u)
 
@@ -427,7 +515,7 @@ async def patch_user(uid: int, b: UserPatch):
 
 
 @app.get("/api/actions", dependencies=[Depends(auth.require_owner)])
-async def actions(limit: int = 200):
+async def actions(limit: int = Query(200, ge=1, le=1000)):
     return q("select * from actions order by ts desc limit ?", min(limit, 1000))
 
 
@@ -453,7 +541,7 @@ async def stats():
 
 
 @app.get("/api/loads")
-async def loads(view: str = "relevant", truck: int | None = None, limit: int = 200):
+async def loads(view: str = "relevant", truck: int | None = None, limit: int = Query(200, ge=1, le=1000)):
     where = {"relevant": "verdict='relevant' and status='new'", "filtered": "verdict='filtered' and status='new'",
              "rejected": "status='rejected'", "all": "1=1"}.get(view, "1=1")
     if truck:
@@ -594,7 +682,7 @@ async def call_now(did: int):
         raise HTTPException(404)
     call, why = await start_call(d[0], manual=True)
     if why:
-        raise HTTPException(400, f"Не звоним: {why}")
+        raise HTTPException(502 if call else 400, f"Не звоним: {why}")
     auth.record(DB, "call_now", did, call["phone"])
     return call
 
@@ -622,7 +710,8 @@ async def dnc_add(b: Phone):
     p = calls.norm_phone(b.phone)
     if not p:
         raise HTTPException(400, "Не похоже на российский номер")
-    DB.execute("insert or replace into do_not_call values(?,?,?,?)", (p, b.reason or "вручную", time.time(), auth.record(DB, "dnc_add", p, b.reason)))
+    who = auth.record(DB, "dnc_add", p, b.reason)
+    DB.execute("insert or replace into do_not_call values(?,?,?,?)", (p, b.reason or "вручную", time.time(), who))
     return {"phone": p}
 
 
@@ -636,14 +725,20 @@ async def dnc_del(phone: str):
 @app.post("/api/telephony/webhook/{secret}")
 async def telephony_webhook(secret: str, request: Request):
     """Вебхук ВАТС (form, cmd=history) и голосового бота (JSON: call_id, status, transcript, duration)."""
-    if not WEBHOOK_SECRET or not hmac.compare_digest(secret, WEBHOOK_SECRET):
+    if not WEBHOOK_SECRET or not hmac.compare_digest(secret.encode(), WEBHOOK_SECRET.encode()):
         raise HTTPException(403)
     if "json" in request.headers.get("content-type", ""):
-        b = await request.json()
-        c = await apply_call_result(b.get("call_id") or b.get("provider_id"), b, by_provider=not b.get("call_id"))
+        try:
+            b = await request.json()
+        except ValueError:
+            raise HTTPException(400, "невалидный JSON")
+        if not isinstance(b, dict):
+            raise HTTPException(400, "ожидается объект")
+        key = b.get("call_id") or b.get("provider_id")  # бот адресует нашим call_id, ВАТС — своим id
+        c = await apply_call_result(key, b, by_provider=not b.get("call_id"), background=True) if key else None
     else:
         pid, res = telephony.parse_megafon(dict(await request.form()))
-        c = await apply_call_result(pid, res, by_provider=True) if pid else None
+        c = await apply_call_result(pid, res, by_provider=True, background=True) if pid else None
     return {"ok": True, "matched": bool(c)}
 
 
@@ -853,6 +948,8 @@ async def get_settings():
 
 @app.put("/api/settings", dependencies=[Depends(auth.require_owner)])
 async def put_settings(b: dict):
+    if "call_hours" in b and not calls.valid_hours(b["call_hours"]):
+        raise HTTPException(400, "Окно звонков — в виде 09:00-19:00")
     for k, v in b.items():
         if k in DEFAULTS:
             DB.execute("insert into kv values(?,?) on conflict(k) do update set v=excluded.v", (k, json.dumps(v)))
@@ -869,5 +966,8 @@ if DIST.exists():
     async def spa(path: str):
         if path.startswith("api/"):
             raise HTTPException(404)
+        f = (DIST / path).resolve()
+        if path and f.is_file() and f.is_relative_to(DIST.resolve()):  # иконка и прочее из web/public
+            return FileResponse(f)
         # index.html не кэшируем: после обновления браузер сразу получит новые бандлы (у них хэш в имени)
         return FileResponse(DIST / "index.html", headers={"Cache-Control": "no-cache"})

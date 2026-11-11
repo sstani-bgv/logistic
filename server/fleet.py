@@ -13,10 +13,11 @@ def _d(s):
         return None
 
 
-def scan_filter(today=None):
-    """SQL-условие и параметры для monitor(): активные свободные + занятые, что освобождаются скоро."""
+def scan_filter(today=None, alias=""):
+    """SQL-условие и параметры для monitor()/auto_start(): активные свободные + занятые, что освобождаются скоро."""
     edge = ((today or date.today()) + timedelta(days=SCAN_AHEAD_DAYS)).isoformat()
-    return "active=1 and (coalesce(status,'free')='free' or free_from<=?)", (edge,)
+    a = f"{alias}." if alias else ""
+    return f"{a}active=1 and (coalesce({a}status,'free')='free' or coalesce({a}free_from,'')<=?)", (edge,)
 
 
 def busy_until(load, metrics, today=None):
@@ -35,7 +36,8 @@ def busy_until(load, metrics, today=None):
 def release_due(db, today=None):
     """Занятые машины, у которых наступил free_from, становятся свободными. Возвращает их id."""
     t = (today or date.today()).isoformat()
-    ids = [r[0] for r in db.execute("select id from trucks where status='busy' and free_from<=?", (t,)).fetchall()]
+    ids = [r[0] for r in db.execute("select id from trucks where status='busy' and (free_from<=? or free_from is null"
+                                    " or free_from='')", (t,)).fetchall()]
     if ids:
         db.execute(f"update trucks set status='free' where id in ({','.join('?' * len(ids))})", ids)
     return ids

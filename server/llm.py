@@ -40,7 +40,7 @@ async def complete(prompt, schema):
                       {"Authorization": f"Bearer {c['key']}"} if c["key"] else {}, c["timeout"])
     try:
         text = (data["choices"][0]["message"]["content"] or "").strip()
-    except (KeyError, IndexError, TypeError):
+    except (KeyError, IndexError, TypeError, AttributeError):
         raise LLMError(f"Неожиданный ответ LLM: {str(data)[:300]}")
     if isinstance(data.get("usage"), dict):
         u = data["usage"]
@@ -108,13 +108,13 @@ def normalize(v, schema):
     return v
 
 
-PY = {"string": str, "object": dict, "boolean": bool, "null": type(None), "array": list}
+PY = {"string": str, "object": dict, "boolean": bool, "null": type(None), "array": list, "number": (int, float)}
 
 
 def _is(v, t):
     if t == "integer":
         return isinstance(v, int) and not isinstance(v, bool)
-    return isinstance(v, PY[t])
+    return t in PY and isinstance(v, PY[t])
 
 
 def check(v, schema, path="$"):

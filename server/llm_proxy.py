@@ -17,14 +17,16 @@ from fastapi import FastAPI, HTTPException
 
 app = FastAPI(title="LLM proxy (codex/mock)")
 MODE = os.environ.get("LLM_PROXY_MODE", "codex")
-CODEX_TIMEOUT = float(os.environ.get("CODEX_TIMEOUT", "240"))
+# Должен быть меньше LLM_TIMEOUT приложения, иначе клиент уйдёт на повтор, пока codex ещё думает
+CODEX_TIMEOUT = float(os.environ.get("CODEX_TIMEOUT", "80"))
+LIMIT = asyncio.Semaphore(int(os.environ.get("CODEX_PARALLEL", "2")))  # не плодим процессы codex
 SCHEMA_MARK = "JSON должен соответствовать схеме:\n"
 
 
 def extract_schema(body):
     fmt = body.get("response_format") or {}
     if fmt.get("type") == "json_schema":
-        return fmt["json_schema"]["schema"]
+        return (fmt.get("json_schema") or {}).get("schema")
     for m in body.get("messages", []):  # режим json_object: llm.py кладёт схему в system
         text = m.get("content") or ""
         if m.get("role") == "system" and SCHEMA_MARK in text:
@@ -79,9 +81,12 @@ async def codex(prompt, schema):
             _, err = await asyncio.wait_for(p.communicate(prompt.encode()), CODEX_TIMEOUT)
         except asyncio.TimeoutError:
             p.kill()
+            await p.wait()
             raise HTTPException(504, f"codex не ответил за {CODEX_TIMEOUT:.0f} с")
         if p.returncode:
             raise HTTPException(502, "codex: " + err.decode()[-500:])
+        if not os.path.exists(out):
+            raise HTTPException(502, "codex завершился без ответа")
         with open(out) as f:
             return f.read().strip()
 
@@ -93,7 +98,8 @@ async def chat(body: dict):
         content = json.dumps(mock_value(schema) if schema else {}, ensure_ascii=False)
     else:
         prompt = "\n\n".join(f"[{m.get('role')}]\n{m.get('content') or ''}" for m in body.get("messages", []))
-        content = await codex(prompt, schema)
+        async with LIMIT:
+            content = await codex(prompt, schema)
     return {"id": f"chatcmpl-{uuid.uuid4().hex[:12]}", "object": "chat.completion", "created": int(time.time()),
             "model": body.get("model", MODE),
             "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": content}}],

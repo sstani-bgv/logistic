@@ -47,6 +47,7 @@ def migrate():
     cols = {r[1] for r in DB.execute("pragma table_info(trucks)")}
     if "status" not in cols:
         DB.execute("alter table trucks add column status text default 'free'")
+        DB.execute("update trucks set status='busy' where free_from>?", (date.today().isoformat(),))
 
 
 migrate()
@@ -174,6 +175,11 @@ async def _agent_step(d):
         DB.execute("update dialogs set status='waiting', summary=? where id=?", (f"Ошибка агента: {e}", d["id"]))
         log(f"Агент не ответил по #{load.get('loadNumber')}: {e}", "error")
         return
+    now = q("select status from dialogs where id=?", d["id"])[0]["status"]
+    if now in ("taken", "declined"):  # пока агент думал, логист сам закрыл диалог — его решение главнее
+        DB.execute("update dialogs set summary=?, facts=?, updated=? where id=?",
+                   (res["summary"], json.dumps(res["facts"], ensure_ascii=False), time.time(), d["id"]))
+        return
     if res["reply"] and settings()["send_enabled"]:
         msg = await ati.send(d["chat_id"], res["reply"])
         DB.execute("insert or ignore into messages values(?,?,?,?,?)", (msg["id"], d["id"], 1, res["reply"], msg["ts"]))
@@ -233,26 +239,26 @@ class Login(BaseModel):
 
 
 @app.get("/api/health")
-def health():
+async def health():
     return {"ok": True}
 
 
 @app.post("/api/login")
-def do_login(b: Login, resp: Response):
+async def do_login(b: Login, resp: Response):
     token, u = auth.login(DB, b.login, b.password)
     auth.set_cookie(resp, token)
     return auth.public_user(u)
 
 
 @app.post("/api/logout")
-def do_logout(request: Request, resp: Response):
+async def do_logout(request: Request, resp: Response):
     auth.logout(DB, request.cookies.get(auth.COOKIE))
     resp.delete_cookie(auth.COOKIE, path="/")
     return {"ok": True}
 
 
 @app.get("/api/me")
-def me():
+async def me():
     return auth.public_user(auth.current())
 
 
@@ -269,19 +275,19 @@ class UserPatch(BaseModel):
 
 
 @app.get("/api/users", dependencies=[Depends(auth.require_owner)])
-def users():
+async def users():
     return [auth.public_user(u) for u in q("select * from users order by id")]
 
 
 @app.post("/api/users", dependencies=[Depends(auth.require_owner)])
-def add_user(b: NewUser):
+async def add_user(b: NewUser):
     uid = auth.create_user(DB, b.login, b.password, b.role)
     auth.record(DB, "user_add", uid, f"{b.login} ({b.role})")
     return auth.public_user(q("select * from users where id=?", uid)[0])
 
 
 @app.patch("/api/users/{uid}", dependencies=[Depends(auth.require_owner)])
-def patch_user(uid: int, b: UserPatch):
+async def patch_user(uid: int, b: UserPatch):
     u = q("select * from users where id=?", uid)
     if not u:
         raise HTTPException(404)
@@ -305,7 +311,7 @@ def patch_user(uid: int, b: UserPatch):
 
 
 @app.get("/api/actions", dependencies=[Depends(auth.require_owner)])
-def actions(limit: int = 200):
+async def actions(limit: int = 200):
     return q("select * from actions order by ts desc limit ?", min(limit, 1000))
 
 
@@ -317,7 +323,7 @@ def load_row(r):
 
 
 @app.get("/api/stats")
-def stats():
+async def stats():
     day = datetime.combine(date.today(), datetime.min.time()).timestamp()
     seen = q("select count(*) n, sum(case when verdict='relevant' then 1 else 0 end) rel from loads where first_seen>=?", day)[0]
     scans = q("select count(*) n, coalesce(sum(seen),0) s from scans where ts>=?", day)[0]
@@ -331,7 +337,7 @@ def stats():
 
 
 @app.get("/api/loads")
-def loads(view: str = "relevant", truck: int | None = None, limit: int = 200):
+async def loads(view: str = "relevant", truck: int | None = None, limit: int = 200):
     where = {"relevant": "verdict='relevant' and status='new'", "filtered": "verdict='filtered' and status='new'",
              "rejected": "status='rejected'", "all": "1=1"}.get(view, "1=1")
     if truck:
@@ -411,8 +417,9 @@ async def auto_start():
     busy_firms = {json.loads(r["raw"]).get("firm", {}).get("id") for r in
                   q("select l.raw from dialogs d join loads l on l.id=d.load_id where d.status in ('writing','waiting','ready')")}
     started = 0
-    for l in q("select * from loads where verdict='relevant' and status='new' and score>=? order by score desc, updated desc",
-               st["auto_score"]):
+    where, args = fleet.scan_filter(alias="t")
+    for l in q(f"select l.* from loads l join trucks t on t.id=l.truck_id where l.verdict='relevant' and l.status='new'"
+               f" and l.score>=? and {where} order by l.score desc, l.updated desc", st["auto_score"], *args):
         if started >= min(st["auto_per_cycle"], left):
             break
         firm = json.loads(l["raw"]).get("firm") or {}
@@ -435,7 +442,7 @@ async def agent_run():
 
 
 @app.get("/api/dialogs")
-def dialogs():
+async def dialogs():
     out = []
     for d in q("select * from dialogs order by updated desc"):
         l = q("select * from loads where id=?", d["load_id"])
@@ -483,6 +490,8 @@ async def patch_dialog(did: int, b: DStatus):
             log(f"{who}: {'взяли груз' if b.status == 'taken' else 'отказались'} (диалог #{did})", "info")
         if b.status == "taken" and d[0]["status"] != "taken":
             truck = await occupy_truck(lid)
+        elif d[0]["status"] == "taken" and b.status != "taken":
+            log(f"{who}: диалог #{did} больше не «взяли» — проверьте статус и дату машины вручную", "error")
     if b.auto is not None:
         DB.execute("update dialogs set auto=? where id=?", (int(b.auto), did))
         auth.record(DB, "dialog_auto_on" if b.auto else "dialog_auto_off", did)
@@ -504,19 +513,22 @@ async def occupy_truck(lid):
             city_id, lat, lon = c["CityId"], lat or c["Latitude"], lon or c["Longitude"]
         except Exception as e:  # справочник недоступен — логист поправит город руками
             log(f"Не нашёл город выгрузки «{city_name}» в справочнике АТИ: {e}", "error")
-    if not city_id:
+    t = q("select * from trucks where id=?", t["id"])[0]  # пока ходили в справочник, машину могли поправить
+    if not city_id:  # город выгрузки не определили — оставляем текущее место целиком, логист поправит
         city_name, city_id, lat, lon = t["city_name"], t["city_id"], t["lat"], t["lon"]
+    free_from = normalize_free_from("busy", u["free_from"])
     DB.execute("update trucks set status='busy', city_name=?, city_id=?, lat=?, lon=?, free_from=? where id=?",
                (city_name, city_id, lat if lat is not None else t["lat"], lon if lon is not None else t["lon"],
-                u["free_from"], t["id"]))
+                free_from, t["id"]))
     rescore()
-    log(f"{t['name']} занята до {u['free_from']}, освободится в {city_name}", "info")
+    log(f"{t['name']} занята до {free_from}, освободится в {city_name}", "info")
     return q("select * from trucks where id=?", t["id"])[0]
 
 
 @app.get("/api/trucks")
-def trucks():
-    fleet.release_due(DB)
+async def trucks():
+    if fleet.release_due(DB):
+        rescore()
     return q("select t.*, (select count(*) from loads l where l.truck_id=t.id and l.verdict='relevant' and l.status='new') relevant"
              " from trucks t order by id")
 
@@ -530,7 +542,7 @@ class Truck(BaseModel):
     body_name: str = "тент"
     height: float = 2.7
     capacity: float = 20
-    free_from: str
+    free_from: date
     active: bool = True
     status: str = "free"
 
@@ -548,7 +560,7 @@ async def city(name):
 async def add_truck(b: Truck):
     c = await city(b.city_name)
     check_status(b.status)
-    st, ff = form_status(b.status, b.free_from)
+    st, ff = form_status(b.status, b.free_from.isoformat())
     DB.execute("insert into trucks(name,driver,city_name,city_id,lat,lon,radius,body_mask,body_name,height,capacity,free_from,active,status)"
                " values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                (b.name, b.driver, c["CityName"], c["CityId"], c["Latitude"], c["Longitude"], b.radius, b.body_mask,
@@ -559,12 +571,15 @@ async def add_truck(b: Truck):
 
 @app.put("/api/trucks/{tid}")
 async def edit_truck(tid: int, b: Truck):
-    t = q("select * from trucks where id=?", tid)[0]
+    t = q("select * from trucks where id=?", tid)
+    if not t:
+        raise HTTPException(404)
+    t = t[0]
     c = {"CityName": t["city_name"], "CityId": t["city_id"], "Latitude": t["lat"], "Longitude": t["lon"]}
     if b.city_name != t["city_name"]:
         c = await city(b.city_name)
     check_status(b.status)
-    st, ff = form_status(b.status, b.free_from)
+    st, ff = form_status(b.status, b.free_from.isoformat())
     DB.execute("update trucks set name=?,driver=?,city_name=?,city_id=?,lat=?,lon=?,radius=?,body_mask=?,body_name=?,"
                "height=?,capacity=?,free_from=?,active=?,status=? where id=?",
                (b.name, b.driver, c["CityName"], c["CityId"], c["Latitude"], c["Longitude"], b.radius, b.body_mask,
@@ -601,7 +616,7 @@ class TruckStatus(BaseModel):
 
 
 @app.patch("/api/trucks/{tid}")
-def set_truck_status(tid: int, b: TruckStatus):
+async def set_truck_status(tid: int, b: TruckStatus):
     """Быстрый переключатель на карточке. «Свободна» = свободна сегодня, если дата освобождения была в будущем."""
     check_status(b.status)
     t = q("select * from trucks where id=?", tid)
@@ -621,7 +636,7 @@ async def scan_now(tid: int):
 
 
 @app.get("/api/rules")
-def rules():
+async def rules():
     return q("select * from rules order by created desc")
 
 
@@ -637,7 +652,7 @@ class RulePatch(BaseModel):
 
 
 @app.patch("/api/rules/{rid}")
-def patch_rule(rid: int, b: RulePatch):
+async def patch_rule(rid: int, b: RulePatch):
     DB.execute("update rules set active=? where id=?", (int(b.active), rid))
     auth.record(DB, "rule_on" if b.active else "rule_off", rid)
     rescore()
@@ -645,7 +660,7 @@ def patch_rule(rid: int, b: RulePatch):
 
 
 @app.delete("/api/rules/{rid}")
-def del_rule(rid: int):
+async def del_rule(rid: int):
     DB.execute("delete from rules where id=?", (rid,))
     auth.record(DB, "rule_delete", rid)
     rescore()
@@ -653,12 +668,12 @@ def del_rule(rid: int):
 
 
 @app.get("/api/settings")
-def get_settings():
+async def get_settings():
     return settings()
 
 
 @app.put("/api/settings", dependencies=[Depends(auth.require_owner)])
-def put_settings(b: dict):
+async def put_settings(b: dict):
     for k, v in b.items():
         if k in DEFAULTS:
             DB.execute("insert into kv values(?,?) on conflict(k) do update set v=excluded.v", (k, json.dumps(v)))
@@ -672,7 +687,7 @@ if DIST.exists():
     app.mount("/assets", StaticFiles(directory=DIST / "assets"), name="assets")
 
     @app.get("/{path:path}")
-    def spa(path: str):
+    async def spa(path: str):
         if path.startswith("api/"):
             raise HTTPException(404)
         return FileResponse(DIST / "index.html")

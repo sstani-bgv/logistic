@@ -23,10 +23,15 @@ export type Truck = {
   id: number; name: string; driver: string; city_name: string; radius: number; body_mask: number; body_name: string
   height: number; capacity: number; free_from: string; active: number; relevant: number; status: "free" | "busy"
 }
-export type Msg = { id: string; mine: number; text: string; ts: number }
+export type Msg = { id: string; mine: number; text: string; ts: number; kind?: "text" | "call" }
+export type Call = {
+  id: number; dialog_id: number; phone: string; started: number | null; created: number; duration: number
+  status: "queued" | "ringing" | "talking" | "done" | "no_answer" | "busy" | "failed"
+  recording_url: string | null; transcript: string | null; cost: number; error: string | null; by_login: string | null
+}
 export type Dialog = {
   id: number; load_id: string; goal: string; status: string; summary: string; auto: number; updated: number
-  facts: Record<string, string | null>; load: Load | null; messages: Msg[]
+  facts: Record<string, string | null>; load: Load | null; messages: Msg[]; calls?: Call[]; phone?: string | null
 }
 export type Rule = { id: number; match: string; value: string; block: number; delta: number; text: string; source: string; active: number; created: number }
 export type LogItem = { ts: number; text: string; kind: string }

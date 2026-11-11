@@ -1,9 +1,12 @@
 """Логист-ассистент: мониторинг биржи АТИ, отбор, ИИ-переговоры, база знаний."""
 import asyncio
+import hmac
 import json
 import os
 import sqlite3
 import time
+
+import httpx
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -16,7 +19,9 @@ from pydantic import BaseModel
 import agent
 import ati
 import auth
+import calls
 import fleet
+import telephony
 from scoring import score
 
 ROOT = Path(__file__).parent
@@ -40,6 +45,7 @@ create table if not exists scans(ts real, truck_id int, seen int, total int);
 """)
 
 auth.init(DB)
+calls.init(DB)
 
 
 def migrate():
@@ -58,6 +64,7 @@ DEFAULTS = {"vat": 22, "min_rate_km": 55, "threshold": 55, "scan_minutes": 5, "p
                             "какую ставку и форму оплаты дают; точный адрес и время погрузки; особые требования (доверенность, "
                             "ремни, растентовка). Первое сообщение — 1–2 коротких вопроса, без торга. Если ставка ниже 55 ₽/км "
                             "чистыми — потом вежливо попробовать поднять."}
+DEFAULTS.update(calls.DEFAULTS)
 
 # Парк для демо: города/кузова — пример, правится на странице «Машины»
 SEED = [
@@ -166,7 +173,8 @@ async def agent_step(d):
 
 async def _agent_step(d):
     load, m, t = dialog_ctx(d)
-    chat = [{"mine": bool(x["mine"]), "text": x["text"]} for x in q("select * from messages where dialog_id=? order by ts", d["id"])]
+    chat = [{"mine": bool(x["mine"]), "text": f"[РАСШИФРОВКА ЗВОНКА] {x['text']}" if x.get("kind") == "call" else x["text"]}
+            for x in q("select * from messages where dialog_id=? order by ts", d["id"])]
     notes = "; ".join(r["text"] for r in q("select text from rules where active=1"))
     DB.execute("update dialogs set status='writing', updated=? where id=?", (time.time(), d["id"]))
     try:
@@ -182,7 +190,7 @@ async def _agent_step(d):
         return
     if res["reply"] and settings()["send_enabled"]:
         msg = await ati.send(d["chat_id"], res["reply"])
-        DB.execute("insert or ignore into messages values(?,?,?,?,?)", (msg["id"], d["id"], 1, res["reply"], msg["ts"]))
+        DB.execute("insert or ignore into messages(id,dialog_id,mine,text,ts) values(?,?,?,?,?)", (msg["id"], d["id"], 1, res["reply"], msg["ts"]))
         DB.execute("update dialogs set last_ts=max(last_ts,?) where id=?", (msg["ts"], d["id"]))
         log(f"Агент → #{load.get('loadNumber')}: {res['reply']}", "agent")
     DB.execute("update dialogs set status=?, summary=?, facts=?, updated=? where id=?",
@@ -203,7 +211,7 @@ async def poll_dialogs():
                 incoming = False
                 for x in sorted(new, key=lambda x: x["ts"]):
                     mine = str(x.get("user", "")).startswith(ME.get("ati_id", "~"))
-                    DB.execute("insert or ignore into messages values(?,?,?,?,?)", (x["id"], d["id"], int(mine), x["text"], x["ts"]))
+                    DB.execute("insert or ignore into messages(id,dialog_id,mine,text,ts) values(?,?,?,?,?)", (x["id"], d["id"], int(mine), x["text"], x["ts"]))
                     DB.execute("update dialogs set last_ts=max(last_ts,?) where id=?", (x["ts"], d["id"]))
                     incoming |= not mine
                 if incoming:
@@ -215,6 +223,114 @@ async def poll_dialogs():
         await asyncio.sleep(15)
 
 
+# ---------- звонки ----------
+RECORDINGS = DATA_DIR / "recordings"
+CALL_RUB_PER_MIN = float(os.environ.get("CALL_RUB_PER_MIN", "3"))  # связь ВАТС
+SPEECH_RUB_PER_MIN = float(os.environ.get("SPEECH_RUB_PER_MIN", "0"))  # STT+TTS, уточнить по тарифу Yandex
+WEBHOOK_SECRET = os.environ.get("TELEPHONY_WEBHOOK_SECRET", "")
+
+
+async def start_call(d, manual=False):
+    """Поставить звонок по диалогу. -> (call | None, причина отказа | None)."""
+    l = q("select raw from loads where id=?", d["load_id"])
+    raw = json.loads(l[0]["raw"]) if l else {}
+    phone = calls.phone_of(raw)
+    why = calls.blocked_reason(DB, settings(), phone, d["id"], manual=manual)
+    if why:
+        return None, why
+    by = auth.current()["login"] if manual and auth.current() else "агент"
+    cid = DB.execute("insert into calls(dialog_id,phone,status,created,by_login) values(?,?,?,?,?)",
+                     (d["id"], phone, "queued", time.time(), by)).lastrowid
+    call = q("select * from calls where id=?", cid)[0]
+    ctx = {"goal": d["goal"], "route": f"{raw.get('loading', {}).get('location', {}).get('city', '')} — "
+                                      f"{raw.get('unloading', {}).get('location', {}).get('city', '')}"}
+    try:
+        pid = await PHONE.start(call, ctx)
+        DB.execute("update calls set provider_id=?, status=case when status='queued' then 'ringing' else status end,"
+                   " started=? where id=?", (pid, time.time(), cid))
+    except Exception as e:
+        DB.execute("update calls set status='failed', error=? where id=?", (str(e)[:500], cid))
+        log(f"Звонок по диалогу #{d['id']} не начался: {e}", "error")
+    log(f"{'Звоним' if not manual else by + ': звоним'} {phone} по диалогу #{d['id']}", "agent")
+    return q("select * from calls where id=?", cid)[0], None
+
+
+async def apply_call_result(call_id, res, by_provider=False):
+    """Итог звонка от мока, вебхука ВАТС или голосового бота; несколько источников дополняют друг друга."""
+    rows = q("select * from calls where provider_id=?" if by_provider else "select * from calls where id=?", str(call_id))
+    if not rows:
+        return None
+    c = rows[0]
+    was_final = c["status"] in telephony.FINAL
+    fields = {k: res[k] for k in ("status", "duration", "recording_url", "transcript") if res.get(k) is not None}
+    if was_final and fields.get("status") not in telephony.FINAL:
+        fields.pop("status", None)  # поздний «talking» не откатывает завершённый звонок
+    if "duration" in fields:
+        fields["cost"] = calls.cost(fields["duration"], CALL_RUB_PER_MIN + SPEECH_RUB_PER_MIN)
+    if fields:
+        DB.execute(f"update calls set {', '.join(f'{k}=?' for k in fields)} where id=?", (*fields.values(), c["id"]))
+    c = q("select * from calls where id=?", c["id"])[0]
+    if fields.get("recording_url", "").startswith("http"):
+        spawn(fetch_recording(c["id"], fields["recording_url"]))
+    if c["status"] in telephony.FINAL and (not was_final or "transcript" in fields):
+        await finish_call(c, new_transcript="transcript" in fields)
+    return c
+
+
+async def finish_call(c, new_transcript):
+    d = q("select * from dialogs where id=?", c["dialog_id"])
+    if not d:
+        return
+    d = d[0]
+    m, s = divmod(int(c["duration"] or 0), 60)
+    log(f"Звонок {c['phone']}: {c['status']}, {m}:{s:02d}, {c['cost'] or 0} ₽", "info")
+    have = q("select 1 from messages where id=?", f"call-{c['id']}")
+    if not c["transcript"] or (have and not new_transcript):
+        return  # расшифровки нет или она уже в переписке
+    DB.execute("insert or replace into messages(id,dialog_id,mine,text,ts,kind) values(?,?,?,?,?,?)",
+               (f"call-{c['id']}", d["id"], 0, calls.call_message(c), msg_now(), "call"))
+    if calls.wants_no_calls(c["transcript"]):
+        DB.execute("insert or ignore into do_not_call values(?,?,?,?)", (c["phone"], "попросили не звонить", time.time(), "агент"))
+        log(f"{c['phone']} попросили не звонить — номер в стоп-листе", "info")
+    if d["status"] not in ("taken", "declined"):
+        await agent_step(d)  # facts/summary/status по расшифровке — тем же negotiate
+
+
+def msg_now():
+    """Метка времени в единицах, которые сейчас в messages (АТИ отдаёт микросекунды)."""
+    return int(calls.ts_like(DB, time.time()))
+
+
+async def fetch_recording(cid, url):
+    try:
+        RECORDINGS.mkdir(parents=True, exist_ok=True)
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as c:
+            r = await c.get(url)
+            r.raise_for_status()
+        (RECORDINGS / f"{cid}.mp3").write_bytes(r.content)
+        DB.execute("update calls set recording_url=? where id=?", (f"/api/calls/{cid}/recording", cid))
+    except Exception as e:
+        log(f"Запись звонка #{cid} не скачалась: {e}", "error")
+
+
+PHONE = telephony.make(apply_call_result)
+
+
+async def call_loop():
+    """Раз в минуту: молчат в чате дольше call_after_min — звоним (в окне, в лимитах)."""
+    while True:
+        try:
+            st = settings()
+            if st["call_enabled"] and calls.in_window(st["call_hours"]):
+                for d in calls.due_dialogs(DB, st):
+                    call, why = await start_call(d)
+                    if why and "лимит" in why:
+                        break
+        except Exception as e:
+            log(f"Ошибка планировщика звонков: {e}", "error")
+        await asyncio.sleep(60)
+
+
 @asynccontextmanager
 async def lifespan(app):
     try:
@@ -223,7 +339,7 @@ async def lifespan(app):
         log(f"АТИ API недоступен: {e}", "error")
     for d in q("select * from dialogs where status='writing'"):  # дожать прерванные
         spawn(agent_step(d))
-    tasks = [asyncio.create_task(monitor()), asyncio.create_task(poll_dialogs())]
+    tasks = [asyncio.create_task(monitor()), asyncio.create_task(poll_dialogs()), asyncio.create_task(call_loop())]
     yield
     for t in tasks:
         t.cancel()
@@ -446,8 +562,11 @@ async def dialogs():
     out = []
     for d in q("select * from dialogs order by updated desc"):
         l = q("select * from loads where id=?", d["load_id"])
+        raw = json.loads(l[0]["raw"]) if l else {}
         out.append({**d, "facts": json.loads(d["facts"] or "{}"), "load": load_row(l[0]) if l else None,
-                    "messages": q("select * from messages where dialog_id=? order by ts", d["id"])})
+                    "messages": q("select * from messages where dialog_id=? order by ts", d["id"]),
+                    "calls": q("select * from calls where dialog_id=? order by created", d["id"]),
+                    "phone": calls.phone_of(raw)})
     return out
 
 
@@ -459,13 +578,73 @@ class Text(BaseModel):
 async def send_manual(did: int, b: Text):
     d = q("select * from dialogs where id=?", did)[0]
     msg = await ati.send(d["chat_id"], b.text)
-    DB.execute("insert or ignore into messages values(?,?,?,?,?)", (msg["id"], did, 1, b.text, msg["ts"]))
+    DB.execute("insert or ignore into messages(id,dialog_id,mine,text,ts) values(?,?,?,?,?)", (msg["id"], did, 1, b.text, msg["ts"]))
     DB.execute("update dialogs set last_ts=max(last_ts,?), updated=? where id=?", (msg["ts"], time.time(), did))
     auth.record(DB, "message_send", did, b.text[:500])
     return {"ok": True}
 
 
 DIALOG_STATUSES = ("writing", "waiting", "ready", "declined", "taken")
+
+
+@app.post("/api/dialogs/{did}/call")
+async def call_now(did: int):
+    d = q("select * from dialogs where id=?", did)
+    if not d:
+        raise HTTPException(404)
+    call, why = await start_call(d[0], manual=True)
+    if why:
+        raise HTTPException(400, f"Не звоним: {why}")
+    auth.record(DB, "call_now", did, call["phone"])
+    return call
+
+
+@app.get("/api/calls/{cid}/recording")
+async def recording(cid: int):
+    f = RECORDINGS / f"{cid}.mp3"
+    if not f.exists():
+        raise HTTPException(404)
+    return FileResponse(f, media_type="audio/mpeg")
+
+
+class Phone(BaseModel):
+    phone: str
+    reason: str = ""
+
+
+@app.get("/api/dnc")
+async def dnc_list():
+    return q("select * from do_not_call order by created desc")
+
+
+@app.post("/api/dnc")
+async def dnc_add(b: Phone):
+    p = calls.norm_phone(b.phone)
+    if not p:
+        raise HTTPException(400, "Не похоже на российский номер")
+    DB.execute("insert or replace into do_not_call values(?,?,?,?)", (p, b.reason or "вручную", time.time(), auth.record(DB, "dnc_add", p, b.reason)))
+    return {"phone": p}
+
+
+@app.delete("/api/dnc/{phone}")
+async def dnc_del(phone: str):
+    DB.execute("delete from do_not_call where phone=?", (calls.norm_phone(phone) or phone,))
+    auth.record(DB, "dnc_delete", phone)
+    return {"ok": True}
+
+
+@app.post("/api/telephony/webhook/{secret}")
+async def telephony_webhook(secret: str, request: Request):
+    """Вебхук ВАТС (form, cmd=history) и голосового бота (JSON: call_id, status, transcript, duration)."""
+    if not WEBHOOK_SECRET or not hmac.compare_digest(secret, WEBHOOK_SECRET):
+        raise HTTPException(403)
+    if "json" in request.headers.get("content-type", ""):
+        b = await request.json()
+        c = await apply_call_result(b.get("call_id") or b.get("provider_id"), b, by_provider=not b.get("call_id"))
+    else:
+        pid, res = telephony.parse_megafon(dict(await request.form()))
+        c = await apply_call_result(pid, res, by_provider=True) if pid else None
+    return {"ok": True, "matched": bool(c)}
 
 
 class DStatus(BaseModel):
@@ -690,4 +869,5 @@ if DIST.exists():
     async def spa(path: str):
         if path.startswith("api/"):
             raise HTTPException(404)
-        return FileResponse(DIST / "index.html")
+        # index.html не кэшируем: после обновления браузер сразу получит новые бандлы (у них хэш в имени)
+        return FileResponse(DIST / "index.html", headers={"Cache-Control": "no-cache"})

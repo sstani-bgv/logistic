@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
-import { Save } from "lucide-react"
+import { Save, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
-import { api, errText, type Settings } from "@/lib/api"
+import { api, ago, errText, usePoll, type Settings } from "@/lib/api"
 
 type Field = { k: string; label: string; hint?: string; type: "number" | "bool" | "text" | "long" }
 const GROUPS: { title: string; fields: Field[] }[] = [
@@ -84,6 +84,40 @@ export default function SettingsPage() {
           </div>
         </section>
       ))}
+      <DncList />
     </div>
+  )
+}
+
+type Dnc = { phone: string; reason: string; created: number; by_login: string }
+
+function DncList() {
+  const { data, reload } = usePoll<Dnc[]>("/dnc", 30000)
+  const [phone, setPhone] = useState("")
+  const add = async () => {
+    try { await api("/dnc", { body: { phone, reason: "вручную" } }); setPhone(""); await reload() } catch (e) { toast.error(errText(e)) }
+  }
+  const del = async (p: string) => {
+    try { await api(`/dnc/${encodeURIComponent(p)}`, { method: "DELETE" }); await reload() } catch (e) { toast.error(errText(e)) }
+  }
+  return (
+    <section className="rounded-xl border bg-card p-5">
+      <h2 className="mb-1 font-medium">Стоп-лист звонков</h2>
+      <p className="mb-4 text-sm text-muted-foreground">Сюда номер попадает сам, если в разговоре попросили не звонить.</p>
+      <div className="mb-3 flex gap-2">
+        <Input aria-label="Телефон в стоп-лист" placeholder="+7 921 000-00-00" value={phone} onChange={(e) => setPhone(e.target.value)} />
+        <Button variant="outline" onClick={add} disabled={!phone.trim()}>Добавить</Button>
+      </div>
+      <div className="flex flex-col gap-1 text-sm">
+        {!data?.length && <div className="text-muted-foreground">Пусто</div>}
+        {data?.map((x) => (
+          <div key={x.phone} className="flex items-center gap-2">
+            <span className="num font-medium">{x.phone}</span>
+            <span className="truncate text-muted-foreground">{x.reason} · {x.by_login} · {ago(x.created)}</span>
+            <Button size="icon" variant="ghost" className="ml-auto size-7" aria-label={`Убрать ${x.phone}`} onClick={() => del(x.phone)}><Trash2 /></Button>
+          </div>
+        ))}
+      </div>
+    </section>
   )
 }

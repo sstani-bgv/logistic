@@ -1,12 +1,12 @@
 import { useState } from "react"
 import { toast } from "sonner"
-import { ArrowRight, Bot, CheckCircle2, Loader2, Send, XCircle } from "lucide-react"
+import { ArrowRight, Ban, Bot, CheckCircle2, Loader2, Phone, PhoneCall, Send, XCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
-import { api, usePoll, rub, ago, ddmm, errText, type Dialog, type DialogPatchResult } from "@/lib/api"
+import { api, usePoll, rub, ago, ddmm, errText, type Call, type Dialog, type DialogPatchResult } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 const COLS = [
@@ -87,6 +87,18 @@ function ChatSheet({ d, onClose, onChange }: { d: Dialog | null; onClose: () => 
       onChange()
     } catch (e) { toast.error(errText(e)) } finally { setSaving(false) }
   }
+  const [calling, setCalling] = useState(false)
+  const callNow = async () => {
+    if (!d) return
+    setCalling(true)
+    try { const c = await api<Call>(`/dialogs/${d.id}/call`, { method: "POST" }); toast.success(`Звоним ${c.phone}`); onChange() }
+    catch (e) { toast.error(errText(e)) } finally { setCalling(false) }
+  }
+  const noCalls = async () => {
+    if (!d?.phone) return
+    try { await api("/dnc", { body: { phone: d.phone, reason: "логист: не звонить" } }); toast.success(`${d.phone} — в стоп-листе`) }
+    catch (e) { toast.error(errText(e)) }
+  }
   const send = async () => {
     if (!d || !text.trim()) return
     setBusy(true)
@@ -109,7 +121,12 @@ function ChatSheet({ d, onClose, onChange }: { d: Dialog | null; onClose: () => 
           </div>
           <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto p-5">
             {d.messages.length === 0 && <div className="m-auto text-sm text-muted-foreground">Агент готовит первое сообщение…</div>}
-            {d.messages.map((m) => (
+            {d.messages.map((m) => m.kind === "call" ? (
+              <div key={m.id} className="w-full rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-2 text-sm dark:border-sky-900 dark:bg-sky-950/40">
+                <div className="mb-1 flex items-center gap-1 text-[11px] text-muted-foreground"><PhoneCall className="size-3" />расшифровка звонка</div>
+                <div className="whitespace-pre-wrap">{m.text}</div>
+              </div>
+            ) : (
               <div key={m.id} className={cn("max-w-[85%] rounded-2xl px-3.5 py-2 text-sm", m.mine ? "self-end rounded-br-sm bg-primary text-primary-foreground" : "self-start rounded-bl-sm border bg-card")}>
                 {!!m.mine && <div className="mb-0.5 flex items-center gap-1 text-[11px] opacity-75"><Bot className="size-3" />агент</div>}
                 <div className="whitespace-pre-wrap">{m.text}</div>
@@ -117,6 +134,11 @@ function ChatSheet({ d, onClose, onChange }: { d: Dialog | null; onClose: () => 
               </div>
             ))}
           </div>
+          {!!d.calls?.length && (
+            <div className="flex flex-col gap-2 border-t p-4">
+              {d.calls.map((c) => <CallRow key={c.id} c={c} />)}
+            </div>
+          )}
           <div className="flex flex-col gap-3 border-t p-4">
             <div className="flex gap-2">
               <Input id="manual-msg" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder="Написать вручную…" />
@@ -124,7 +146,9 @@ function ChatSheet({ d, onClose, onChange }: { d: Dialog | null; onClose: () => 
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Switch id="auto" checked={!!d.auto} disabled={saving} onCheckedChange={(v) => patch({ auto: v })} /><Label htmlFor="auto" className="text-sm">Агент отвечает сам</Label>
-              <div className="ml-auto flex gap-2">
+              <div className="ml-auto flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" disabled={calling || !d.phone} title={d.phone ? `Позвонить ${d.phone}` : "У заказчика нет телефона в АТИ"} onClick={callNow}>{calling ? <Loader2 className="animate-spin" /> : <Phone />}Позвонить сейчас</Button>
+                {d.phone && <Button size="sm" variant="ghost" onClick={noCalls} title="Больше не звонить на этот номер"><Ban />Не звонить</Button>}
                 <Button size="sm" variant="outline" disabled={saving} onClick={() => patch({ status: "declined" })}><XCircle />Отказ</Button>
                 <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700" disabled={saving} onClick={() => patch({ status: "taken" })}><CheckCircle2 />Берём</Button>
               </div>
@@ -133,5 +157,27 @@ function ChatSheet({ d, onClose, onChange }: { d: Dialog | null; onClose: () => 
         </>}
       </SheetContent>
     </Sheet>
+  )
+}
+
+const CALL_STATUS: Record<Call["status"], string> = {
+  queued: "в очереди", ringing: "дозваниваемся", talking: "идёт разговор", done: "состоялся",
+  no_answer: "не ответили", busy: "занято", failed: "ошибка",
+}
+
+function CallRow({ c }: { c: Call }) {
+  const m = Math.floor((c.duration || 0) / 60), s = (c.duration || 0) % 60
+  return (
+    <div className="rounded-lg border bg-muted/30 p-2.5 text-sm">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <PhoneCall className="size-3.5 text-muted-foreground" />
+        <span className="font-medium">{c.phone}</span>
+        <span className={cn("text-xs", c.status === "failed" ? "text-destructive" : "text-muted-foreground")}>{CALL_STATUS[c.status] ?? c.status}</span>
+        {c.status === "done" && <span className="num text-xs text-muted-foreground">{m}:{String(s).padStart(2, "0")} · {c.cost} ₽</span>}
+        <span className="ml-auto text-xs text-muted-foreground">{c.by_login && c.by_login !== "агент" ? c.by_login : "агент"} · {ago(c.created)}</span>
+      </div>
+      {c.error && <div className="mt-1 text-xs text-destructive">{c.error}</div>}
+      {c.recording_url && <audio controls preload="none" src={c.recording_url} className="mt-2 h-8 w-full" aria-label={`Запись звонка ${c.phone}`} />}
+    </div>
   )
 }

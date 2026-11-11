@@ -21,6 +21,7 @@ LOCK_FAILS, LOCK_SECONDS = 5, 15 * 60  # 5 неверных паролей — �
 PH = PasswordHasher()
 CURRENT: ContextVar[dict | None] = ContextVar("current_user", default=None)
 PUBLIC = {"/api/login", "/api/logout", "/api/health"}
+PUBLIC_PREFIX = ("/api/telephony/",)  # вебхуки ВАТС и голосового бота — со своим секретом в пути
 FAILS: dict[str, list[float]] = {}
 
 SCHEMA = """
@@ -120,7 +121,7 @@ def make_guard(db):
     async def guard(request: Request):
         """Зависимость на всё приложение: /api/* только после входа (кроме PUBLIC)."""
         path = request.url.path
-        if not path.startswith("/api/") or path in PUBLIC:
+        if not path.startswith("/api/") or path in PUBLIC or path.startswith(PUBLIC_PREFIX):
             return None
         u = user_by_token(db, request.cookies.get(COOKIE))
         if not u:

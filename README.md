@@ -2,8 +2,9 @@
 
 Прототип: ищет грузы на ATI.su под свои машины, скорит их (`server/scoring.py`), отсеивает лишнее и ведёт переговоры с заказчиком в мессенджере ATI через ИИ-агента (`server/agent.py` → `server/llm.py`: любой OpenAI-совместимый API со structured output). Объяснения логиста агент превращает в правила (база знаний).
 
-- `server/` — FastAPI + SQLite, интеграция с ATI API (`ati.py`)
-- `web/` — React 19 + Vite + Tailwind + shadcn/ui: Грузы, Переговоры (канбан/диалоги), База знаний, Машины
+- `server/` — FastAPI + SQLite: ATI (`ati.py`), модель (`llm.py`), машины (`fleet.py`), логины (`auth.py`), звонки (`calls.py`, `telephony.py`)
+- `web/` — React 19 + Vite + Tailwind + shadcn/ui: Грузы, Переговоры (канбан/диалоги, звонки), База знаний, Машины, Настройки, Сотрудники
+- `deploy/` — Caddy, бэкапы, [инструкция по деплою](deploy/DEPLOY.md); памятка логиста — [docs/ПАМЯТКА.md](docs/ПАМЯТКА.md); план — [docs/PLAN.md](docs/PLAN.md)
 
 ## Запуск
 
@@ -14,6 +15,8 @@ cp .env.example .env   # вписать ATI_CLIENT_ID, ATI_TOKEN и блок LLM
 (cd web && pnpm install)
 ./run.sh               # http://127.0.0.1:8010
 ```
+
+Первый вход: `cd server && uv run python manage.py create-owner <логин>` (пароль спросит).
 
 ## Модель (LLM)
 

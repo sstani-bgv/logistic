@@ -46,8 +46,8 @@ def norm_phone(p):
 def phone_of(load):
     """Телефон контакта из выдачи АТИ (firm.contacts[].phones[] или .phone/.mobile)."""
     for c in (load.get("firm") or {}).get("contacts") or []:
-        cands = [x.get("number") if isinstance(x, dict) else x for x in c.get("phones") or []]
-        cands += [c.get("phone"), c.get("mobile"), c.get("mobilePhone")]
+        cands = [(x.get("number") or x.get("phone")) if isinstance(x, dict) else x for x in c.get("phones") or []]
+        cands += [c.get(k) for k in ("phone", "mobile", "mobilePhone", "mobile_phone", "phone_number", "phoneNumber")]
         for x in cands:
             if n := norm_phone(x):
                 return n
@@ -100,7 +100,9 @@ def blocked_reason(db, st, phone, dialog_id, now=None, manual=False):
     if db.execute("select 1 from calls where dialog_id=? and status in (%s)" % ",".join("?" * len(ACTIVE)),
                   (dialog_id, *ACTIVE)).fetchone():
         return "звонок уже идёт"
-    if db.execute(f"select count(*) from calls where dialog_id=? and {REAL}", (dialog_id,)).fetchone()[0] >= PER_LOAD:
+    per_load = db.execute(f"select count(*) from calls where {REAL} and dialog_id in (select id from dialogs where load_id="
+                          "(select load_id from dialogs where id=?))", (dialog_id,)).fetchone()[0]
+    if per_load >= PER_LOAD:
         return f"уже {PER_LOAD} попытки по этому грузу"
     last = db.execute(f"select max(created) from calls where phone=? and {REAL}", (phone,)).fetchone()[0]
     if last and now - last < NUMBER_GAP:
@@ -116,10 +118,11 @@ def due_dialogs(db, st, now=None):
     now = now or time.time()
     edge = now - st["call_after_min"] * 60
     rows = db.execute(f"""
-        select d.* from dialogs d where d.status='waiting' and d.auto=1
-          and exists (select 1 from messages m where m.dialog_id=d.id)
-          and (select m.mine from messages m where m.dialog_id=d.id order by {TS_SEC} desc limit 1)=1
-          and (select max({TS_SEC}) from messages m where m.dialog_id=d.id) < ?
+        select d.* from dialogs d where d.status='waiting' and d.auto=1 and (
+          (d.chat_id is null and not exists (select 1 from calls c where c.dialog_id=d.id))  -- чата нет, есть телефон
+          or (exists (select 1 from messages m where m.dialog_id=d.id)
+              and (select m.mine from messages m where m.dialog_id=d.id order by {TS_SEC} desc limit 1)=1
+              and (select max({TS_SEC}) from messages m where m.dialog_id=d.id) < ?))
         order by d.updated""", (edge,)).fetchall()
     return [dict(r) for r in rows]
 

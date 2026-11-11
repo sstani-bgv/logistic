@@ -30,7 +30,7 @@ export type Call = {
   recording_url: string | null; transcript: string | null; cost: number; error: string | null; by_login: string | null
 }
 export type Dialog = {
-  id: number; load_id: string; goal: string; status: string; summary: string; auto: number; updated: number
+  id: number; load_id: string; chat_id: string | null; goal: string; status: string; summary: string; auto: number; updated: number
   facts: Record<string, string | null>; load: Load | null; messages: Msg[]; calls?: Call[]; phone?: string | null
 }
 export type Rule = { id: number; match: string; value: string; block: number; delta: number; text: string; source: string; active: number; created: number }

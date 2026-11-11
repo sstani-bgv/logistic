@@ -1,8 +1,7 @@
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { toast } from "sonner"
 import { Ban, Brain, Loader2, Trash2, TrendingDown, TrendingUp, StickyNote } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
@@ -10,11 +9,6 @@ import { api, errText, usePoll, ago, type Rule } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 const MATCH: Record<string, string> = { firm_id: "фирма", firm_name: "фирма", cargo: "тип груза", load_city: "погрузка", unload_city: "выгрузка", note: "примечание", profile: "тип заказчика", none: "заметка агенту" }
-
-type Settings = {
-  vat: number; min_rate_km: number; threshold: number; scan_minutes: number; send_enabled: boolean; default_goal: string
-  auto_start: boolean; auto_score: number; auto_per_cycle: number; auto_daily: number
-}
 
 export default function KnowledgePage() {
   const { data: rules, reload } = usePoll<Rule[]>("/rules", 8000)
@@ -29,7 +23,7 @@ export default function KnowledgePage() {
   const del = async (r: Rule) => { await api(`/rules/${r.id}`, { method: "DELETE" }); reload() }
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
+    <div className="flex flex-col gap-6">
       <div className="flex min-w-0 flex-col gap-5">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">База знаний</h1>
@@ -61,41 +55,6 @@ export default function KnowledgePage() {
           })}
         </div>
       </div>
-      <SettingsCard />
-    </div>
-  )
-}
-
-function SettingsCard() {
-  const { data } = usePoll<Settings>("/settings", 60000)
-  const [s, setS] = useState<Settings | null>(null)
-  useEffect(() => { if (data && !s) setS(data) }, [data, s])
-  if (!s) return null
-  const save = async () => { await api("/settings", { method: "PUT", body: s }); toast.success("Сохранено — грузы переоценены") }
-  const num = (k: keyof Settings, label: string, hint: string) => (
-    <div className="flex flex-col gap-1.5">
-      <Label htmlFor={`s-${k}`}>{label}</Label>
-      <Input id={`s-${k}`} type="number" value={String(s[k])} onChange={(e) => setS({ ...s, [k]: Number(e.target.value) })} />
-      <span className="text-xs text-muted-foreground">{hint}</span>
-    </div>
-  )
-  return (
-    <div className="flex h-fit flex-col gap-4 rounded-xl border bg-card p-5 xl:sticky xl:top-6">
-      <div className="font-semibold">Базовые правила отбора</div>
-      {num("min_rate_km", "Минимальная ставка, ₽/км", "чистыми, с учётом холостого пробега")}
-      {num("vat", "НДС, %", "«с НДС» пересчитывается в чистые деньги")}
-      {num("threshold", "Порог релевантности", "ниже — груз уходит в «отсеяно»")}
-      {num("scan_minutes", "Проход по бирже, мин", "чаще — быстрее реакция")}
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="s-goal">Цель агента по умолчанию</Label>
-        <Textarea id="s-goal" rows={4} value={s.default_goal} onChange={(e) => setS({ ...s, default_goal: e.target.value })} />
-      </div>
-      <div className="flex items-center gap-2"><Switch id="s-send" checked={s.send_enabled} onCheckedChange={(v) => setS({ ...s, send_enabled: v })} /><Label htmlFor="s-send">Агент отправляет сообщения</Label></div>
-      <div className="flex items-center gap-2"><Switch id="s-auto" checked={s.auto_start} onCheckedChange={(v) => setS({ ...s, auto_start: v })} /><Label htmlFor="s-auto">Агент сам берёт лучшие грузы</Label></div>
-      {s.auto_start && <div className="grid grid-cols-3 gap-2">
-        {num("auto_score", "Оценка от", "")}{num("auto_per_cycle", "За проход", "")}{num("auto_daily", "В день", "")}
-      </div>}
-      <Button onClick={save}>Сохранить</Button>
     </div>
   )
 }

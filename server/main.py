@@ -2,6 +2,7 @@
 import asyncio
 import hmac
 import json
+import logging
 import os
 import sqlite3
 import time
@@ -17,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import agent
+import llm
 import ati
 import auth
 import calls
@@ -46,6 +48,8 @@ create table if not exists scans(ts real, truck_id int, seen int, total int);
 
 auth.init(DB)
 calls.init(DB)
+DB.execute("create table if not exists llm_usage(ts real, model text, prompt_tokens int, completion_tokens int, cost real)")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
 
 def migrate():
@@ -59,7 +63,7 @@ def migrate():
 migrate()
 DEFAULTS = {"vat": 22, "min_rate_km": 55, "threshold": 55, "scan_minutes": 5, "pages": 4, "send_enabled": True,
             # агент сам берёт лучшие грузы; лимиты — чтобы не спамить биржу
-            "auto_start": True, "auto_score": 85, "auto_per_cycle": 2, "auto_daily": 10,
+            "auto_start": True, "auto_score": 85, "auto_per_cycle": 1, "auto_daily": 3,  # старт у клиента — осторожно, потом поднять
             "default_goal": "Узнать то, чего нет в объявлении и что нужно для решения: актуален ли груз; если ставка «запрос» — "
                             "какую ставку и форму оплаты дают; точный адрес и время погрузки; особые требования (доверенность, "
                             "ремни, растентовка). Первое сообщение — 1–2 коротких вопроса, без торга. Если ставка ниже 55 ₽/км "
@@ -188,7 +192,7 @@ async def _agent_step(d):
         DB.execute("update dialogs set summary=?, facts=?, updated=? where id=?",
                    (res["summary"], json.dumps(res["facts"], ensure_ascii=False), time.time(), d["id"]))
         return
-    if res["reply"] and settings()["send_enabled"]:
+    if res["reply"] and settings()["send_enabled"] and d["chat_id"]:
         msg = await ati.send(d["chat_id"], res["reply"])
         DB.execute("insert or ignore into messages(id,dialog_id,mine,text,ts) values(?,?,?,?,?)", (msg["id"], d["id"], 1, res["reply"], msg["ts"]))
         DB.execute("update dialogs set last_ts=max(last_ts,?) where id=?", (msg["ts"], d["id"]))
@@ -202,9 +206,17 @@ async def _agent_step(d):
         DB.execute("update loads set status='declined' where id=?", (d["load_id"],))
 
 
+def dnc_from_dialog(d, reason):
+    l = q("select raw from loads where id=?", d["load_id"])
+    phone = calls.phone_of(json.loads(l[0]["raw"])) if l else None
+    if phone and not q("select 1 from do_not_call where phone=?", phone):
+        DB.execute("insert or ignore into do_not_call values(?,?,?,?)", (phone, reason, time.time(), "агент"))
+        log(f"{phone}: {reason} — номер в стоп-листе", "info")
+
+
 async def poll_dialogs():
     while True:
-        for d in q("select * from dialogs where status in ('waiting','ready')"):
+        for d in q("select * from dialogs where status in ('waiting','ready') and chat_id is not null"):
             try:
                 new = [x for x in await ati.history(d["chat_id"], d["last_ts"] or None)
                        if x.get("text") and not x.get("event") and x["ts"] > d["last_ts"]]
@@ -214,6 +226,8 @@ async def poll_dialogs():
                     DB.execute("insert or ignore into messages(id,dialog_id,mine,text,ts) values(?,?,?,?,?)", (x["id"], d["id"], int(mine), x["text"], x["ts"]))
                     DB.execute("update dialogs set last_ts=max(last_ts,?) where id=?", (x["ts"], d["id"]))
                     incoming |= not mine
+                    if not mine and calls.wants_no_calls(x["text"]):
+                        dnc_from_dialog(d, "написали в чате АТИ: не звонить")
                 if incoming:
                     log(f"Заказчик ответил в диалоге #{d['id']}", "reply")
                     if d["auto"] and d["status"] == "waiting":
@@ -239,7 +253,7 @@ async def start_call(d, manual=False):
     """Поставить звонок по диалогу. -> (call | None, причина отказа | None)."""
     l = q("select raw from loads where id=?", d["load_id"])
     raw = json.loads(l[0]["raw"]) if l else {}
-    phone = calls.phone_of(raw)
+    phone = calls.phone_of(raw) or await phone_from_firm_card(d["load_id"], raw)
     why = calls.blocked_reason(DB, settings(), phone, d["id"], manual=manual)
     if why:
         return None, why
@@ -249,7 +263,9 @@ async def start_call(d, manual=False):
                      (d["id"], phone, "queued", time.time(), by)).lastrowid
     call = q("select * from calls where id=?", cid)[0]
     ctx = {"goal": d["goal"], "route": f"{raw.get('loading', {}).get('location', {}).get('city', '')} — "
-                                      f"{raw.get('unloading', {}).get('location', {}).get('city', '')}"}
+                                      f"{raw.get('unloading', {}).get('location', {}).get('city', '')}",
+           "load": raw, "facts": json.loads(d.get("facts") or "{}"),  # для голосового бота: та же цель и контекст
+           "chat": [x["text"] for x in q("select text from messages where dialog_id=? order by ts", d["id"])][-10:]}
     try:
         pid = await PHONE.start(call, ctx)
         if not pid:
@@ -262,6 +278,23 @@ async def start_call(d, manual=False):
         return q("select * from calls where id=?", cid)[0], f"ошибка телефонии: {e}"
     log(f"{'Звоним' if not manual else by + ': звоним'} {phone} по диалогу #{d['id']}", "agent")
     return q("select * from calls where id=?", cid)[0], None
+
+
+async def phone_from_firm_card(load_id, raw):
+    """Телефона нет в выдаче — берём из карточки фирмы АТИ и запоминаем в грузе, чтобы не спрашивать снова."""
+    firm = raw.get("firm") or {}
+    if not firm.get("id") or firm.get("phones_checked"):
+        return None
+    try:
+        contacts = await ati.firm_contacts(firm["id"])
+    except Exception as e:
+        log(f"Карточка фирмы {firm.get('name')} в АТИ недоступна: {e}", "error")
+        return None
+    firm["contacts"] = (firm.get("contacts") or []) + [c for c in contacts if isinstance(c, dict)]
+    firm["phones_checked"] = True
+    raw["firm"] = firm
+    DB.execute("update loads set raw=? where id=?", (json.dumps(raw, ensure_ascii=False), load_id))
+    return calls.phone_of(raw)
 
 
 def clean_result(res):
@@ -390,6 +423,17 @@ async def fetch_recording(cid, url):
 
 
 PHONE = telephony.make(apply_call_result)
+llm.USAGE_HOOK = lambda model, pin, pout, rub: DB.execute("insert into llm_usage values(?,?,?,?,?)",
+                                                          (time.time(), model, pin, pout, rub))
+
+
+def costs_today():
+    day = calls.msk_day_start()
+    u = q("select count(*) n, coalesce(sum(cost),0) rub, coalesce(sum(prompt_tokens+completion_tokens),0) tokens"
+          " from llm_usage where ts>=?", day)[0]
+    c = q("select count(*) n, coalesce(sum(cost),0) rub, coalesce(sum(duration),0) sec from calls where created>=?", day)[0]
+    return {"llm_requests": u["n"], "llm_tokens": u["tokens"], "llm_rub": round(u["rub"], 2),
+            "calls": c["n"], "call_minutes": round(c["sec"] / 60, 1), "calls_rub": round(c["rub"], 2)}
 
 
 async def reap_stale_calls():
@@ -566,6 +610,7 @@ async def reject(lid: str, b: Reason):
     rule = None
     if b.learn and b.reason.strip():
         rule = await add_rule_from_text(b.reason, json.loads(l[0]["raw"]), json.loads(l[0]["metrics"]), lid)
+        auth.record(DB, "rule_add", rule["id"], rule["text"])
     return {"rule": rule}
 
 
@@ -600,7 +645,17 @@ async def start_dialog(l, goal, by_agent=False):
     if not firm.get("contacts"):
         raise ValueError("У груза скрыт заказчик — написать некому")
     c = firm["contacts"][0]
-    chat_id = await ati.open_chat(f"{firm['id']}.{c['id']}", c["name"], firm.get("name", ""))
+    try:
+        chat_id = await ati.open_chat(f"{firm['id']}.{c['id']}", c["name"], firm.get("name", ""))
+    except Exception as e:
+        if not calls.phone_of(raw):
+            raise ValueError(f"Чат с заказчиком не открылся ({e}), телефона нет") from e
+        # чата нет, но есть телефон — диалог «только звонок», call_loop позвонит без ожидания ответа в чате
+        cur = DB.execute("insert into dialogs(load_id,chat_id,goal,status,summary,created,updated) values(?,?,?,?,?,?,?)",
+                         (l["id"], None, goal, "waiting", "Чат не открылся — позвоним по телефону", time.time(), time.time()))
+        DB.execute("update loads set status='dialog' where id=?", (l["id"],))
+        log(f"Чат с {firm.get('name')} не открылся ({e}) — поставили звонок", "agent")
+        return q("select * from dialogs where id=?", cur.lastrowid)[0]
     cur = DB.execute("insert into dialogs(load_id,chat_id,goal,status,summary,created,updated) values(?,?,?,?,?,?,?)",
                      (l["id"], chat_id, goal, "writing",
                       "Агент сам выбрал груз и готовит вопросы" if by_agent else "Агент готовит первое сообщение",
@@ -664,7 +719,12 @@ class Text(BaseModel):
 
 @app.post("/api/dialogs/{did}/send")
 async def send_manual(did: int, b: Text):
-    d = q("select * from dialogs where id=?", did)[0]
+    d = q("select * from dialogs where id=?", did)
+    if not d:
+        raise HTTPException(404)
+    d = d[0]
+    if not d["chat_id"]:
+        raise HTTPException(400, "Чата с заказчиком нет — только звонок")
     msg = await ati.send(d["chat_id"], b.text)
     DB.execute("insert or ignore into messages(id,dialog_id,mine,text,ts) values(?,?,?,?,?)", (msg["id"], did, 1, b.text, msg["ts"]))
     DB.execute("update dialogs set last_ts=max(last_ts,?), updated=? where id=?", (msg["ts"], time.time(), did))
@@ -943,7 +1003,15 @@ async def del_rule(rid: int):
 
 @app.get("/api/settings")
 async def get_settings():
+    u = auth.current()
+    if u and u["role"] != "owner":  # логист настроек не видит — только цель агента для запуска диалога
+        return {"default_goal": settings()["default_goal"]}
     return settings()
+
+
+@app.get("/api/costs", dependencies=[Depends(auth.require_owner)])
+async def costs():
+    return costs_today()
 
 
 @app.put("/api/settings", dependencies=[Depends(auth.require_owner)])

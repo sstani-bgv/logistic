@@ -326,3 +326,76 @@ def test_recording_url_allowlist(monkeypatch):
     monkeypatch.setenv("RECORDING_HOSTS", "localhost")
     with pytest.raises(ValueError, match="внутренний адрес"):
         main.safe_recording_url("http://localhost/x.mp3")
+
+
+# --- после сверки с ТЗ ---
+
+def test_logist_sees_only_goal(make_client):
+    lg, ow = make_client("logist"), make_client("owner")
+    assert set(lg.get("/api/settings").json()) == {"default_goal"}
+    assert "call_daily" in ow.get("/api/settings").json()
+    assert lg.get("/api/costs").status_code == 403 and ow.get("/api/costs").status_code == 200
+
+
+def test_no_chat_but_phone_creates_call_dialog(monkeypatch):
+    async def broken_chat(*a):
+        raise RuntimeError("мессенджер недоступен")
+    monkeypatch.setattr(main.ati, "open_chat", broken_chat)
+    raw = {"id": "N1", "firm": {"id": 3, "name": "Ф", "contacts": [{"id": 1, "name": "И", "phones": ["89215551234"]}]}}
+    main.DB.execute("insert into loads(id,truck_id,raw,score,verdict,reasons,metrics,status) values('N1',1,?,90,'relevant','[]','{}','new')",
+                    (json.dumps(raw),))
+    d = asyncio.run(main.start_dialog(main.q("select * from loads where id='N1'")[0], "цель"))
+    assert d["chat_id"] is None and d["status"] == "waiting"
+    assert [x["id"] for x in calls.due_dialogs(main.DB, ST)] == [d["id"]]  # звонить сразу, без ожидания чата
+    raw["firm"]["contacts"][0]["phones"] = []
+    main.DB.execute("update loads set raw=?, status='new' where id='N1'", (json.dumps(raw),))
+    with pytest.raises(ValueError, match="телефона нет"):
+        asyncio.run(main.start_dialog(main.q("select * from loads where id='N1'")[0], "цель"))
+
+
+def test_phone_from_firm_card(monkeypatch):
+    asked = []
+
+    async def card(firm_id):
+        asked.append(firm_id)
+        return [{"id": 5, "name": "Пётр", "mobile_phone": "+7 (921) 000-11-22"}]
+    monkeypatch.setattr(main.ati, "firm_contacts", card)
+    did = mk_dialog(phone=None)
+    raw = json.loads(main.q("select raw from loads where id='L1'")[0]["raw"])
+    assert asyncio.run(main.phone_from_firm_card("L1", raw)) == "+79210001122"
+    stored = json.loads(main.q("select raw from loads where id='L1'")[0]["raw"])
+    assert calls.phone_of(stored) == "+79210001122" and stored["firm"]["phones_checked"]
+    assert asyncio.run(main.phone_from_firm_card("L1", stored)) is None and asked == [1]  # второй раз не спрашиваем
+    assert did
+
+
+def test_dnc_from_chat_message():
+    did = mk_dialog()
+    main.dnc_from_dialog(main.q("select * from dialogs where id=?", did)[0], "написали в чате")
+    assert main.q("select phone, reason from do_not_call") == [{"phone": "+79215551234", "reason": "написали в чате"}]
+
+
+def test_attempts_counted_per_load():
+    first = mk_dialog()
+    add_call(first, "+79215551234", at(9))
+    add_call(first, "+79990000000", at(10))
+    again = main.DB.execute("insert into dialogs(load_id,chat_id,goal,status,auto) values('L1','c2','g','waiting',1)").lastrowid
+    assert "2 попытки" in calls.blocked_reason(main.DB, ST, "+79991112233", again, at(15))
+
+
+def test_send_manual_404(make_client):
+    assert make_client("logist").post("/api/dialogs/9999/send", json={"text": "x"}).status_code == 404
+
+
+def test_llm_error_goes_to_summary(monkeypatch):
+    did = mk_dialog()
+    main.DB.execute("update loads set metrics='{}' where id='L1'")
+    main.DB.execute("insert into trucks(id,name,city_name,city_id,lat,lon,radius,body_mask,body_name,height,capacity,free_from)"
+                    " values(1,'T','СПб',1,59.9,30.3,150,1,'тент',2.7,20,'2026-01-01')")
+
+    async def bad(*a):
+        raise main.llm.LLMError("LLM вернула невалидный JSON: oops")
+    monkeypatch.setattr(main.agent, "negotiate", bad)
+    asyncio.run(main._agent_step(main.q("select * from dialogs where id=?", did)[0]))
+    d = main.q("select status, summary from dialogs where id=?", did)[0]
+    assert d["status"] == "waiting" and "невалидный JSON" in d["summary"]

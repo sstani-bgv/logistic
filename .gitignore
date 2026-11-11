@@ -9,3 +9,4 @@ contract/
 call/
 screens/
 server/recordings/
+server/eval-*.md

@@ -153,3 +153,21 @@ def test_proxy_codex_missing(monkeypatch):
     llm.TRANSPORT = httpx.ASGITransport(app=llm_proxy.app)
     with pytest.raises(llm.LLMError, match="codex CLI не найден"):
         run(llm.complete("x", agent.RULE_SCHEMA))
+
+
+def test_usage_cost_hook(monkeypatch):
+    monkeypatch.setenv("LLM_RUB_PER_1K_IN", "0.4")
+    monkeypatch.setenv("LLM_RUB_PER_1K_OUT", "1.2")
+    got = []
+    monkeypatch.setattr(llm, "USAGE_HOOK", lambda *a: got.append(a))
+    llm.TRANSPORT = httpx.MockTransport(lambda r: httpx.Response(200, json={
+        "choices": [{"message": {"content": json.dumps(GOOD)}}], "usage": {"prompt_tokens": 2000, "completion_tokens": 500}}))
+    run(llm.complete("x", agent.NEGOTIATE_SCHEMA))
+    assert got == [("test-model", 2000, 500, 1.4)]
+
+
+def test_prompt_forbids_confirming():
+    calls = serve(json.dumps(GOOD))
+    run(agent.negotiate(LOAD, METRICS, TRUCK, "цель", [], "", "Иван"))
+    prompt = json.loads(calls[0].content)["messages"][1]["content"]
+    assert "ничего не подтверждай" in prompt and "РАСШИФРОВКА ЗВОНКА" in prompt

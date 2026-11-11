@@ -1,0 +1,956 @@
+[
+ {
+  "name": "первое сообщение",
+  "load": {
+   "loadNumber": "1042",
+   "note": "",
+   "route": {
+    "distance": 710
+   },
+   "firm": {
+    "id": 7,
+    "name": "ООО Северный груз",
+    "profile": "грузовладелец"
+   },
+   "loading": {
+    "location": {
+     "city": "Санкт-Петербург",
+     "street": "Шушары"
+    },
+    "firstDate": "2026-11-13T00:00"
+   },
+   "unloading": {
+    "location": {
+     "city": "Москва",
+     "street": ""
+    }
+   },
+   "load": {
+    "cargoType": "ТНП",
+    "weight": 18
+   }
+  },
+  "metrics": {
+   "gross": 60000,
+   "money": "с НДС",
+   "net": 49180,
+   "dist": 710
+  },
+  "truck": {
+   "name": "Volvo FH · А742КС",
+   "body_name": "тент",
+   "capacity": 20,
+   "height": 2.7,
+   "city_name": "Санкт-Петербург",
+   "free_from": "2026-11-13"
+  },
+  "goal": "Узнать актуальность; если ставка «запрос» — ставку и форму оплаты; точный адрес и время погрузки. Ниже 55 ₽/км чистыми — попробовать поднять.",
+  "chat": [],
+  "expect_status": [
+   "waiting"
+  ],
+  "expect_reply": true,
+  "expect_null": [
+   "address",
+   "time"
+  ]
+ },
+ {
+  "name": "ждём ответа на наш вопрос",
+  "load": {
+   "loadNumber": "1042",
+   "note": "",
+   "route": {
+    "distance": 710
+   },
+   "firm": {
+    "id": 7,
+    "name": "ООО Северный груз",
+    "profile": "грузовладелец"
+   },
+   "loading": {
+    "location": {
+     "city": "Санкт-Петербург",
+     "street": "Шушары"
+    },
+    "firstDate": "2026-11-13T00:00"
+   },
+   "unloading": {
+    "location": {
+     "city": "Москва",
+     "street": ""
+    }
+   },
+   "load": {
+    "cargoType": "ТНП",
+    "weight": 18
+   }
+  },
+  "metrics": {
+   "gross": 60000,
+   "money": "с НДС",
+   "net": 49180,
+   "dist": 710
+  },
+  "truck": {
+   "name": "Volvo FH · А742КС",
+   "body_name": "тент",
+   "capacity": 20,
+   "height": 2.7,
+   "city_name": "Санкт-Петербург",
+   "free_from": "2026-11-13"
+  },
+  "goal": "Узнать актуальность; если ставка «запрос» — ставку и форму оплаты; точный адрес и время погрузки. Ниже 55 ₽/км чистыми — попробовать поднять.",
+  "chat": [
+   {
+    "mine": true,
+    "text": "Добрый день! Груз актуален? Подскажите адрес погрузки."
+   }
+  ],
+  "expect_status": [
+   "waiting"
+  ],
+  "expect_reply": false,
+  "expect_null": [
+   "actual",
+   "address",
+   "time"
+  ]
+ },
+ {
+  "name": "груз ушёл",
+  "load": {
+   "loadNumber": "1042",
+   "note": "",
+   "route": {
+    "distance": 710
+   },
+   "firm": {
+    "id": 7,
+    "name": "ООО Северный груз",
+    "profile": "грузовладелец"
+   },
+   "loading": {
+    "location": {
+     "city": "Санкт-Петербург",
+     "street": "Шушары"
+    },
+    "firstDate": "2026-11-13T00:00"
+   },
+   "unloading": {
+    "location": {
+     "city": "Москва",
+     "street": ""
+    }
+   },
+   "load": {
+    "cargoType": "ТНП",
+    "weight": 18
+   }
+  },
+  "metrics": {
+   "gross": 60000,
+   "money": "с НДС",
+   "net": 49180,
+   "dist": 710
+  },
+  "truck": {
+   "name": "Volvo FH · А742КС",
+   "body_name": "тент",
+   "capacity": 20,
+   "height": 2.7,
+   "city_name": "Санкт-Петербург",
+   "free_from": "2026-11-13"
+  },
+  "goal": "Узнать актуальность; если ставка «запрос» — ставку и форму оплаты; точный адрес и время погрузки. Ниже 55 ₽/км чистыми — попробовать поднять.",
+  "chat": [
+   {
+    "mine": true,
+    "text": "Добрый день! Груз актуален?"
+   },
+   {
+    "mine": false,
+    "text": "Нет, уже уехал, извините."
+   }
+  ],
+  "expect_status": [
+   "declined"
+  ]
+ },
+ {
+  "name": "всё выяснили",
+  "load": {
+   "loadNumber": "1042",
+   "note": "",
+   "route": {
+    "distance": 710
+   },
+   "firm": {
+    "id": 7,
+    "name": "ООО Северный груз",
+    "profile": "грузовладелец"
+   },
+   "loading": {
+    "location": {
+     "city": "Санкт-Петербург",
+     "street": "Шушары"
+    },
+    "firstDate": "2026-11-13T00:00"
+   },
+   "unloading": {
+    "location": {
+     "city": "Москва",
+     "street": ""
+    }
+   },
+   "load": {
+    "cargoType": "ТНП",
+    "weight": 18
+   }
+  },
+  "metrics": {
+   "gross": 60000,
+   "money": "с НДС",
+   "net": 49180,
+   "dist": 710
+  },
+  "truck": {
+   "name": "Volvo FH · А742КС",
+   "body_name": "тент",
+   "capacity": 20,
+   "height": 2.7,
+   "city_name": "Санкт-Петербург",
+   "free_from": "2026-11-13"
+  },
+  "goal": "Узнать актуальность; если ставка «запрос» — ставку и форму оплаты; точный адрес и время погрузки. Ниже 55 ₽/км чистыми — попробовать поднять.",
+  "chat": [
+   {
+    "mine": true,
+    "text": "Добрый день! Актуально? Адрес и время погрузки?"
+   },
+   {
+    "mine": false,
+    "text": "Да, актуально. Шушары, Московское ш. 25, завтра с 8 до 12. 60 тыс с НДС, оплата 5 б.д. по сканам."
+   }
+  ],
+  "expect_status": [
+   "ready"
+  ],
+  "expect_facts": {
+   "address": "Московское",
+   "payment": "5"
+  }
+ },
+ {
+  "name": "ставка по запросу — не выдумывать",
+  "load": {
+   "loadNumber": "1042",
+   "note": "",
+   "route": {
+    "distance": 710
+   },
+   "firm": {
+    "id": 7,
+    "name": "ООО Северный груз",
+    "profile": "грузовладелец"
+   },
+   "loading": {
+    "location": {
+     "city": "Санкт-Петербург",
+     "street": "Шушары"
+    },
+    "firstDate": "2026-11-13T00:00"
+   },
+   "unloading": {
+    "location": {
+     "city": "Москва",
+     "street": ""
+    }
+   },
+   "load": {
+    "cargoType": "ТНП",
+    "weight": 18
+   }
+  },
+  "metrics": {
+   "gross": null,
+   "money": "запрос",
+   "net": null,
+   "dist": 710
+  },
+  "truck": {
+   "name": "Volvo FH · А742КС",
+   "body_name": "тент",
+   "capacity": 20,
+   "height": 2.7,
+   "city_name": "Санкт-Петербург",
+   "free_from": "2026-11-13"
+  },
+  "goal": "Узнать актуальность; если ставка «запрос» — ставку и форму оплаты; точный адрес и время погрузки. Ниже 55 ₽/км чистыми — попробовать поднять.",
+  "chat": [
+   {
+    "mine": true,
+    "text": "Добрый день! Груз актуален?"
+   },
+   {
+    "mine": false,
+    "text": "Актуален."
+   }
+  ],
+  "expect_status": [
+   "waiting"
+  ],
+  "expect_reply": true,
+  "expect_null": [
+   "price",
+   "payment"
+  ]
+ },
+ {
+  "name": "просят подтвердить рейс",
+  "load": {
+   "loadNumber": "1042",
+   "note": "",
+   "route": {
+    "distance": 710
+   },
+   "firm": {
+    "id": 7,
+    "name": "ООО Северный груз",
+    "profile": "грузовладелец"
+   },
+   "loading": {
+    "location": {
+     "city": "Санкт-Петербург",
+     "street": "Шушары"
+    },
+    "firstDate": "2026-11-13T00:00"
+   },
+   "unloading": {
+    "location": {
+     "city": "Москва",
+     "street": ""
+    }
+   },
+   "load": {
+    "cargoType": "ТНП",
+    "weight": 18
+   }
+  },
+  "metrics": {
+   "gross": 60000,
+   "money": "с НДС",
+   "net": 49180,
+   "dist": 710
+  },
+  "truck": {
+   "name": "Volvo FH · А742КС",
+   "body_name": "тент",
+   "capacity": 20,
+   "height": 2.7,
+   "city_name": "Санкт-Петербург",
+   "free_from": "2026-11-13"
+  },
+  "goal": "Узнать актуальность; если ставка «запрос» — ставку и форму оплаты; точный адрес и время погрузки. Ниже 55 ₽/км чистыми — попробовать поднять.",
+  "chat": [
+   {
+    "mine": true,
+    "text": "Добрый день! Актуально?"
+   },
+   {
+    "mine": false,
+    "text": "Да. Ставим вашу машину? Подтверждаете рейс, присылайте данные водителя."
+   }
+  ],
+  "expect_status": [
+   "ready",
+   "waiting"
+  ],
+  "forbid_in_reply": [
+   "подтверждаю",
+   "ставьте",
+   "высылаю данные водителя",
+   "договорились"
+  ]
+ },
+ {
+  "name": "низкая ставка — торг",
+  "load": {
+   "loadNumber": "1042",
+   "note": "",
+   "route": {
+    "distance": 710
+   },
+   "firm": {
+    "id": 7,
+    "name": "ООО Северный груз",
+    "profile": "грузовладелец"
+   },
+   "loading": {
+    "location": {
+     "city": "Санкт-Петербург",
+     "street": "Шушары"
+    },
+    "firstDate": "2026-11-13T00:00"
+   },
+   "unloading": {
+    "location": {
+     "city": "Москва",
+     "street": ""
+    }
+   },
+   "load": {
+    "cargoType": "ТНП",
+    "weight": 18
+   }
+  },
+  "metrics": {
+   "gross": 30000,
+   "money": "с НДС",
+   "net": 24590,
+   "dist": 710
+  },
+  "truck": {
+   "name": "Volvo FH · А742КС",
+   "body_name": "тент",
+   "capacity": 20,
+   "height": 2.7,
+   "city_name": "Санкт-Петербург",
+   "free_from": "2026-11-13"
+  },
+  "goal": "Узнать актуальность; если ставка «запрос» — ставку и форму оплаты; точный адрес и время погрузки. Ниже 55 ₽/км чистыми — попробовать поднять.",
+  "chat": [
+   {
+    "mine": true,
+    "text": "Добрый день! Актуально?"
+   },
+   {
+    "mine": false,
+    "text": "Да, 30 000 с НДС, больше не дадим."
+   }
+  ],
+  "expect_status": [
+   "waiting",
+   "declined"
+  ],
+  "expect_facts": {
+   "price": "30"
+  },
+  "forbid_in_reply": [
+   "подтверждаю",
+   "договорились"
+  ]
+ },
+ {
+  "name": "особые требования",
+  "load": {
+   "loadNumber": "1042",
+   "note": "",
+   "route": {
+    "distance": 710
+   },
+   "firm": {
+    "id": 7,
+    "name": "ООО Северный груз",
+    "profile": "грузовладелец"
+   },
+   "loading": {
+    "location": {
+     "city": "Санкт-Петербург",
+     "street": "Шушары"
+    },
+    "firstDate": "2026-11-13T00:00"
+   },
+   "unloading": {
+    "location": {
+     "city": "Москва",
+     "street": ""
+    }
+   },
+   "load": {
+    "cargoType": "ТНП",
+    "weight": 18
+   }
+  },
+  "metrics": {
+   "gross": 60000,
+   "money": "с НДС",
+   "net": 49180,
+   "dist": 710
+  },
+  "truck": {
+   "name": "Volvo FH · А742КС",
+   "body_name": "тент",
+   "capacity": 20,
+   "height": 2.7,
+   "city_name": "Санкт-Петербург",
+   "free_from": "2026-11-13"
+  },
+  "goal": "Узнать актуальность; если ставка «запрос» — ставку и форму оплаты; точный адрес и время погрузки. Ниже 55 ₽/км чистыми — попробовать поднять.",
+  "chat": [
+   {
+    "mine": true,
+    "text": "Добрый день! Есть особые требования?"
+   },
+   {
+    "mine": false,
+    "text": "Нужна растентовка сверху и 10 ремней, доверенность обязательна."
+   }
+  ],
+  "expect_status": [
+   "waiting",
+   "ready"
+  ],
+  "expect_facts": {
+   "other": "ремн"
+  }
+ },
+ {
+  "name": "грубый отказ",
+  "load": {
+   "loadNumber": "1042",
+   "note": "",
+   "route": {
+    "distance": 710
+   },
+   "firm": {
+    "id": 7,
+    "name": "ООО Северный груз",
+    "profile": "грузовладелец"
+   },
+   "loading": {
+    "location": {
+     "city": "Санкт-Петербург",
+     "street": "Шушары"
+    },
+    "firstDate": "2026-11-13T00:00"
+   },
+   "unloading": {
+    "location": {
+     "city": "Москва",
+     "street": ""
+    }
+   },
+   "load": {
+    "cargoType": "ТНП",
+    "weight": 18
+   }
+  },
+  "metrics": {
+   "gross": 60000,
+   "money": "с НДС",
+   "net": 49180,
+   "dist": 710
+  },
+  "truck": {
+   "name": "Volvo FH · А742КС",
+   "body_name": "тент",
+   "capacity": 20,
+   "height": 2.7,
+   "city_name": "Санкт-Петербург",
+   "free_from": "2026-11-13"
+  },
+  "goal": "Узнать актуальность; если ставка «запрос» — ставку и форму оплаты; точный адрес и время погрузки. Ниже 55 ₽/км чистыми — попробовать поднять.",
+  "chat": [
+   {
+    "mine": true,
+    "text": "Добрый день! Актуально?"
+   },
+   {
+    "mine": false,
+    "text": "Не пишите сюда больше."
+   }
+  ],
+  "expect_status": [
+   "declined"
+  ]
+ },
+ {
+  "name": "расшифровка звонка",
+  "load": {
+   "loadNumber": "1042",
+   "note": "",
+   "route": {
+    "distance": 710
+   },
+   "firm": {
+    "id": 7,
+    "name": "ООО Северный груз",
+    "profile": "грузовладелец"
+   },
+   "loading": {
+    "location": {
+     "city": "Санкт-Петербург",
+     "street": "Шушары"
+    },
+    "firstDate": "2026-11-13T00:00"
+   },
+   "unloading": {
+    "location": {
+     "city": "Москва",
+     "street": ""
+    }
+   },
+   "load": {
+    "cargoType": "ТНП",
+    "weight": 18
+   }
+  },
+  "metrics": {
+   "gross": 60000,
+   "money": "с НДС",
+   "net": 49180,
+   "dist": 710
+  },
+  "truck": {
+   "name": "Volvo FH · А742КС",
+   "body_name": "тент",
+   "capacity": 20,
+   "height": 2.7,
+   "city_name": "Санкт-Петербург",
+   "free_from": "2026-11-13"
+  },
+  "goal": "Узнать актуальность; если ставка «запрос» — ставку и форму оплаты; точный адрес и время погрузки. Ниже 55 ₽/км чистыми — попробовать поднять.",
+  "chat": [
+   {
+    "mine": true,
+    "text": "Добрый день! Актуально?"
+   },
+   {
+    "mine": false,
+    "text": "[РАСШИФРОВКА ЗВОНКА] Агент: Груз актуален?\nЗаказчик: Да, грузим послезавтра с 10, Шушары, Ленсоветовская 12, 62 тысячи с НДС, оплата 7 дней."
+   }
+  ],
+  "expect_status": [
+   "ready"
+  ],
+  "expect_facts": {
+   "address": "Ленсоветовская",
+   "price": "62"
+  }
+ },
+ {
+  "load": {
+   "loadNumber": "1042",
+   "note": "",
+   "route": {
+    "distance": 710
+   },
+   "firm": {
+    "id": 7,
+    "name": "ООО Северный груз",
+    "profile": "грузовладелец"
+   },
+   "loading": {
+    "location": {
+     "city": "Санкт-Петербург",
+     "street": "Шушары"
+    },
+    "firstDate": "2026-11-13T00:00"
+   },
+   "unloading": {
+    "location": {
+     "city": "Москва",
+     "street": ""
+    }
+   },
+   "load": {
+    "cargoType": "ТНП",
+    "weight": 18
+   }
+  },
+  "metrics": {
+   "gross": 60000,
+   "money": "с НДС",
+   "net": 49180,
+   "dist": 710
+  },
+  "truck": {
+   "name": "Volvo FH · А742КС",
+   "body_name": "тент",
+   "capacity": 20,
+   "height": 2.7,
+   "city_name": "Санкт-Петербург",
+   "free_from": "2026-11-13"
+  },
+  "goal": "Узнать актуальность; если ставка «запрос» — ставку и форму оплаты; точный адрес и время погрузки. Ниже 55 ₽/км чистыми — попробовать поднять.",
+  "name": "заказчик задаёт вопрос о машине",
+  "chat": [
+   {
+    "mine": true,
+    "text": "Добрый день! Актуально?"
+   },
+   {
+    "mine": false,
+    "text": "Да. А у вас какая высота кузова и есть ли растентовка?"
+   }
+  ],
+  "expect_status": [
+   "waiting"
+  ],
+  "expect_reply": true,
+  "forbid_in_reply": [
+   "подтверждаю"
+  ]
+ },
+ {
+  "load": {
+   "loadNumber": "1042",
+   "note": "",
+   "route": {
+    "distance": 710
+   },
+   "firm": {
+    "id": 7,
+    "name": "ООО Северный груз",
+    "profile": "грузовладелец"
+   },
+   "loading": {
+    "location": {
+     "city": "Санкт-Петербург",
+     "street": "Шушары"
+    },
+    "firstDate": "2026-11-13T00:00"
+   },
+   "unloading": {
+    "location": {
+     "city": "Москва",
+     "street": ""
+    }
+   },
+   "load": {
+    "cargoType": "ТНП",
+    "weight": 18
+   }
+  },
+  "metrics": {
+   "gross": 60000,
+   "money": "с НДС",
+   "net": 49180,
+   "dist": 710
+  },
+  "truck": {
+   "name": "Volvo FH · А742КС",
+   "body_name": "тент",
+   "capacity": 20,
+   "height": 2.7,
+   "city_name": "Санкт-Петербург",
+   "free_from": "2026-11-13"
+  },
+  "goal": "Узнать актуальность; если ставка «запрос» — ставку и форму оплаты; точный адрес и время погрузки. Ниже 55 ₽/км чистыми — попробовать поднять.",
+  "name": "ставка без оплаты",
+  "chat": [
+   {
+    "mine": true,
+    "text": "Добрый день! Какая ставка и оплата?"
+   },
+   {
+    "mine": false,
+    "text": "Ставка 58 тысяч."
+   }
+  ],
+  "expect_status": [
+   "waiting"
+  ],
+  "expect_reply": true,
+  "expect_facts": {
+   "price": "58"
+  },
+  "expect_null": [
+   "payment"
+  ]
+ },
+ {
+  "load": {
+   "loadNumber": "1042",
+   "note": "",
+   "route": {
+    "distance": 710
+   },
+   "firm": {
+    "id": 7,
+    "name": "ООО Северный груз",
+    "profile": "грузовладелец"
+   },
+   "loading": {
+    "location": {
+     "city": "Санкт-Петербург",
+     "street": "Шушары"
+    },
+    "firstDate": "2026-11-13T00:00"
+   },
+   "unloading": {
+    "location": {
+     "city": "Москва",
+     "street": ""
+    }
+   },
+   "load": {
+    "cargoType": "ТНП",
+    "weight": 18
+   }
+  },
+  "metrics": {
+   "gross": 60000,
+   "money": "с НДС",
+   "net": 49180,
+   "dist": 710
+  },
+  "truck": {
+   "name": "Volvo FH · А742КС",
+   "body_name": "тент",
+   "capacity": 20,
+   "height": 2.7,
+   "city_name": "Санкт-Петербург",
+   "free_from": "2026-11-13"
+  },
+  "goal": "Узнать актуальность; если ставка «запрос» — ставку и форму оплаты; точный адрес и время погрузки. Ниже 55 ₽/км чистыми — попробовать поднять.",
+  "name": "дата погрузки сдвинулась далеко",
+  "chat": [
+   {
+    "mine": true,
+    "text": "Добрый день! Актуально?"
+   },
+   {
+    "mine": false,
+    "text": "Актуально, но грузим только через 10 дней."
+   }
+  ],
+  "expect_status": [
+   "waiting",
+   "declined"
+  ],
+  "expect_facts": {
+   "*": "10"
+  }
+ },
+ {
+  "load": {
+   "loadNumber": "1042",
+   "note": "",
+   "route": {
+    "distance": 710
+   },
+   "firm": {
+    "id": 7,
+    "name": "ООО Северный груз",
+    "profile": "грузовладелец"
+   },
+   "loading": {
+    "location": {
+     "city": "Санкт-Петербург",
+     "street": "Шушары"
+    },
+    "firstDate": "2026-11-13T00:00"
+   },
+   "unloading": {
+    "location": {
+     "city": "Москва",
+     "street": ""
+    }
+   },
+   "load": {
+    "cargoType": "ТНП",
+    "weight": 18
+   }
+  },
+  "metrics": {
+   "gross": 60000,
+   "money": "с НДС",
+   "net": 49180,
+   "dist": 710
+  },
+  "truck": {
+   "name": "Volvo FH · А742КС",
+   "body_name": "тент",
+   "capacity": 20,
+   "height": 2.7,
+   "city_name": "Санкт-Петербург",
+   "free_from": "2026-11-13"
+  },
+  "goal": "Узнать актуальность; если ставка «запрос» — ставку и форму оплаты; точный адрес и время погрузки. Ниже 55 ₽/км чистыми — попробовать поднять.",
+  "name": "перенос контакта — звонить другому",
+  "chat": [
+   {
+    "mine": true,
+    "text": "Добрый день! Актуально?"
+   },
+   {
+    "mine": false,
+    "text": "Я не занимаюсь, звоните Ивану +7 921 111-22-33."
+   }
+  ],
+  "expect_status": [
+   "waiting",
+   "ready"
+  ],
+  "expect_facts": {
+   "other": "иван"
+  }
+ },
+ {
+  "load": {
+   "loadNumber": "1042",
+   "note": "",
+   "route": {
+    "distance": 710
+   },
+   "firm": {
+    "id": 7,
+    "name": "ООО Северный груз",
+    "profile": "грузовладелец"
+   },
+   "loading": {
+    "location": {
+     "city": "Санкт-Петербург",
+     "street": "Шушары"
+    },
+    "firstDate": "2026-11-13T00:00"
+   },
+   "unloading": {
+    "location": {
+     "city": "Москва",
+     "street": ""
+    }
+   },
+   "load": {
+    "cargoType": "ТНП",
+    "weight": 18
+   }
+  },
+  "metrics": {
+   "gross": 60000,
+   "money": "с НДС",
+   "net": 49180,
+   "dist": 710
+  },
+  "truck": {
+   "name": "Volvo FH · А742КС",
+   "body_name": "тент",
+   "capacity": 20,
+   "height": 2.7,
+   "city_name": "Санкт-Петербург",
+   "free_from": "2026-11-13"
+  },
+  "goal": "Узнать актуальность; если ставка «запрос» — ставку и форму оплаты; точный адрес и время погрузки. Ниже 55 ₽/км чистыми — попробовать поднять.",
+  "name": "предоплата и наличные",
+  "chat": [
+   {
+    "mine": true,
+    "text": "Добрый день! Форма оплаты?"
+   },
+   {
+    "mine": false,
+    "text": "Наличными водителю на выгрузке, 55 тысяч."
+   }
+  ],
+  "expect_status": [
+   "waiting",
+   "ready"
+  ],
+  "expect_facts": {
+   "payment": "нал",
+   "price": "55"
+  }
+ }
+]

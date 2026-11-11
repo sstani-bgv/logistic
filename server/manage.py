@@ -2,6 +2,7 @@
 
   uv run python manage.py create-owner <login>    — первый владелец (пароль спросит; или env OWNER_PASSWORD)
   uv run python manage.py reset-password <login>  — сменить пароль и выкинуть сессии
+  uv run python manage.py check-ati               — проверить токен и тариф АТИ: аккаунт, поиск, мессенджер
 """
 import getpass
 import os
@@ -33,7 +34,40 @@ def ask_password():
     return p
 
 
+async def check_ati():
+    import ati
+    ok = True
+
+    async def step(name, coro):
+        nonlocal ok
+        try:
+            print(f"✓ {name}: {await coro}")
+        except Exception as e:
+            ok = False
+            print(f"✗ {name}: {e}")
+    await step("аккаунт (firms/contacts)", ati.me())
+    truck = {"city_id": 1, "radius": 100, "body_mask": 1}  # СПб — проверка доступа к поиску
+    await step("поиск грузов", _count(ati.search(truck, 1)))
+    await step("мессенджер (список чатов)", _chats(ati))
+    print("Тариф даёт всё нужное" if ok else "Не хватает доступа — проверьте тариф/токен АТИ")
+    return ok
+
+
+async def _count(coro):
+    loads, total = await coro
+    return f"{total} грузов в выдаче"
+
+
+async def _chats(ati):
+    r = await ati.client.get("https://api.ati.su/messenger/1.1/chats/", params={"num": 1})
+    r.raise_for_status()
+    return "доступен"
+
+
 def main(argv):
+    if len(argv) == 2 and argv[1] == "check-ati":
+        import asyncio
+        sys.exit(0 if asyncio.run(check_ati()) else 1)
     if len(argv) != 3 or argv[1] not in ("create-owner", "reset-password"):
         sys.exit(__doc__)
     cmd, login = argv[1], argv[2]

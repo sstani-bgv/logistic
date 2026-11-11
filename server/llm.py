@@ -12,6 +12,7 @@ import httpx
 
 log = logging.getLogger("llm")
 TRANSPORT = None  # в тестах подменяется на httpx.MockTransport
+USAGE_HOOK = None  # main.py пишет сюда учёт токенов и стоимости: fn(model, prompt_tokens, completion_tokens, rub)
 RETRY_DELAY = 1.0
 
 
@@ -30,6 +31,9 @@ def cfg():
         "json_mode": e.get("LLM_JSON_MODE", "json_object"),
         "timeout": float(e.get("LLM_TIMEOUT", "90")),
         "temperature": float(e.get("LLM_TEMPERATURE", "0.3")),
+        # цены провайдера за 1000 токенов в рублях — для учёта стоимости (ТЗ 2.1)
+        "rub_in": float(e.get("LLM_RUB_PER_1K_IN", "0")),
+        "rub_out": float(e.get("LLM_RUB_PER_1K_OUT", "0")),
     }
 
 
@@ -44,7 +48,11 @@ async def complete(prompt, schema):
         raise LLMError(f"Неожиданный ответ LLM: {str(data)[:300]}")
     if isinstance(data.get("usage"), dict):
         u = data["usage"]
-        log.info("LLM %s: %s → %s токенов", c["model"], u.get("prompt_tokens"), u.get("completion_tokens"))
+        pin, pout = int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
+        rub = round(pin / 1000 * c["rub_in"] + pout / 1000 * c["rub_out"], 4)
+        log.info("LLM %s: %s → %s токенов, %.2f ₽", c["model"], pin, pout, rub)
+        if USAGE_HOOK:
+            USAGE_HOOK(c["model"], pin, pout, rub)
     return check(normalize(parse(text), schema), schema)
 
 

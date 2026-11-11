@@ -21,4 +21,8 @@ gunzip -c "$src" > "$tmp/data.db"
 [ -f "$DATA/data.db" ] && cp "$DATA/data.db" "$DATA/data.db.before-restore-$(date +%F_%H%M%S)"
 rm -f "$DATA/data.db-wal" "$DATA/data.db-shm"
 mv "$tmp/data.db" "$DATA/data.db"
+if [ -n "${BACKUP_BUCKET:-}" ] && [ "${WITH_RECORDINGS:-1}" = 1 ]; then
+  mkdir -p "$DATA/recordings"
+  rclone copy "s3:$BACKUP_BUCKET/recordings/" "$DATA/recordings/" --s3-no-check-bucket && echo "Записи звонков восстановлены из S3"
+fi
 echo "Восстановлено из $src: $(sqlite3 "$DATA/data.db" 'select count(*) from trucks') машин, $(sqlite3 "$DATA/data.db" 'select count(*) from dialogs') диалогов"

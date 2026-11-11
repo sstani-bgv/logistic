@@ -16,7 +16,8 @@ find "$OUT/db" -name 'data-*.db.gz' -mtime +"$KEEP_DAYS" -delete
 if [ -n "${BACKUP_BUCKET:-}" ] && [ -n "${RCLONE_CONFIG_S3_TYPE:-}" ]; then
   rclone copy "$snap.gz" "s3:$BACKUP_BUCKET/db/" --s3-no-check-bucket
   rclone delete "s3:$BACKUP_BUCKET/db/" --min-age "${KEEP_DAYS}d" --s3-no-check-bucket
-  [ -d "$DATA/recordings" ] && rclone copy "$DATA/recordings" "s3:$BACKUP_BUCKET/recordings/" --s3-no-check-bucket
+  # записи: заливаем только свежие (иначе каждую ночь перезаливали бы старые и тут же удаляли), в S3 храним KEEP_DAYS
+  [ -d "$DATA/recordings" ] && rclone copy "$DATA/recordings" "s3:$BACKUP_BUCKET/recordings/" --max-age "${KEEP_DAYS}d" --s3-no-check-bucket
   rclone delete "s3:$BACKUP_BUCKET/recordings/" --min-age "${KEEP_DAYS}d" --s3-no-check-bucket || true
   echo "$(date '+%F %T') выгружено в s3:$BACKUP_BUCKET"
 else

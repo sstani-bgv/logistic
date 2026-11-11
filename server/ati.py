@@ -3,8 +3,10 @@ import os
 import httpx
 
 TOKEN = os.environ.get("ATI_TOKEN", "")  # без токена модуль импортируется (тесты, мок), запросы вернут 401
+# ATI требует User-Agent интегратора: ati_integrator_<ID приложения клиента>
+CLIENT_ID = os.environ.get("ATI_CLIENT_ID") or "5464422"
 HEAD = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/json",
-        "User-Agent": "ati_integrator_5464422"}
+        "User-Agent": f"ati_integrator_{CLIENT_ID}"}
 client = httpx.AsyncClient(headers=HEAD, timeout=30, follow_redirects=True)
 
 
@@ -48,3 +50,13 @@ async def history(chat_id, since=None):
     r = await client.get(f"https://api.ati.su/messenger/1.1/chats/{chat_id}/history/", params=params)
     r.raise_for_status()
     return r.json()
+
+
+async def firm_contacts(firm_id):
+    """Контакты фирмы из карточки АТИ — если в выдаче груза телефона нет.
+    ПРОВЕРИТЬ на токене клиента: путь и поля ответа (phone / mobile_phone / phones[]).
+    """
+    r = await client.get(f"https://api.ati.su/v1.0/firms/{firm_id}/contacts")
+    r.raise_for_status()
+    j = r.json()
+    return j if isinstance(j, list) else j.get("contacts", [])

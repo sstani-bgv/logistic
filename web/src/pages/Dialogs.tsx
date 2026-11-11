@@ -120,7 +120,7 @@ function ChatSheet({ d, onClose, onChange }: { d: Dialog | null; onClose: () => 
             ))}
           </div>
           <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto p-5">
-            {d.messages.length === 0 && <div className="m-auto text-sm text-muted-foreground">Агент готовит первое сообщение…</div>}
+            {d.messages.length === 0 && <div className="m-auto text-sm text-muted-foreground">{d.chat_id ? "Агент готовит первое сообщение…" : "Чат не открылся — агент позвонит по телефону"}</div>}
             {d.messages.map((m) => m.kind === "call" ? (
               <div key={m.id} className="w-full rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-2 text-sm dark:border-sky-900 dark:bg-sky-950/40">
                 <div className="mb-1 flex items-center gap-1 text-[11px] text-muted-foreground"><PhoneCall className="size-3" />расшифровка звонка</div>
@@ -141,8 +141,8 @@ function ChatSheet({ d, onClose, onChange }: { d: Dialog | null; onClose: () => 
           )}
           <div className="flex flex-col gap-3 border-t p-4">
             <div className="flex gap-2">
-              <Input id="manual-msg" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder="Написать вручную…" />
-              <Button size="icon" onClick={send} disabled={busy}><Send /></Button>
+              <Input id="manual-msg" aria-label="Сообщение заказчику" value={text} disabled={!d.chat_id} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder={d.chat_id ? "Написать вручную…" : "Чата с заказчиком нет — только звонок"} />
+              <Button size="icon" onClick={send} disabled={busy || !d.chat_id} aria-label="Отправить"><Send /></Button>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Switch id="auto" checked={!!d.auto} disabled={saving} onCheckedChange={(v) => patch({ auto: v })} /><Label htmlFor="auto" className="text-sm">Агент отвечает сам</Label>

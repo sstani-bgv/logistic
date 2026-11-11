@@ -51,6 +51,7 @@ export default function SettingsPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Настройки</h1>
           <p className="text-sm text-muted-foreground">Лимиты агента, отбор грузов и звонки. Видит только владелец.</p>
+          <Costs />
         </div>
         <Button onClick={save} disabled={busy}><Save />Сохранить</Button>
       </div>
@@ -119,5 +120,18 @@ function DncList() {
         ))}
       </div>
     </section>
+  )
+}
+
+type CostsT = { llm_requests: number; llm_tokens: number; llm_rub: number; calls: number; call_minutes: number; calls_rub: number }
+
+function Costs() {
+  const { data: c } = usePoll<CostsT>("/costs", 60000)
+  if (!c) return null
+  return (
+    <p className="mt-1 text-sm">
+      Сегодня: модель — <span className="num font-medium">{c.llm_rub} ₽</span> ({c.llm_requests} запросов, {c.llm_tokens.toLocaleString("ru-RU")} токенов),
+      звонки — <span className="num font-medium">{c.calls_rub} ₽</span> ({c.calls} шт., {c.call_minutes} мин)
+    </p>
   )
 }

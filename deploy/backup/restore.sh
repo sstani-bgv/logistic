@@ -1,0 +1,24 @@
+#!/bin/bash
+# Восстановление базы из бэкапа. Приложение на время остановить:
+#   docker compose stop app && docker compose run --rm backup restore.sh [имя.db.gz|latest] && docker compose start app
+# Имя без пути ищется локально, затем в S3. Текущая база сохраняется рядом как data.db.before-restore-<время>.
+set -euo pipefail
+DATA=${DATA:-/data}; OUT=${OUT:-/backups}
+name=${1:-latest}
+if [ "$name" = latest ]; then
+  name=$(ls -1t "$OUT"/db/data-*.db.gz 2>/dev/null | head -1 || true)
+  [ -n "$name" ] || { echo "Локальных бэкапов нет — укажите имя файла из S3" >&2; exit 1; }
+fi
+src="$name"
+[ -f "$src" ] || src="$OUT/db/$(basename "$name")"
+if [ ! -f "$src" ] && [ -n "${BACKUP_BUCKET:-}" ]; then
+  rclone copy "s3:$BACKUP_BUCKET/db/$(basename "$name")" "$OUT/db/" --s3-no-check-bucket
+fi
+[ -f "$src" ] || { echo "Не нашёл бэкап $name" >&2; exit 1; }
+tmp=$(mktemp -d)
+gunzip -c "$src" > "$tmp/data.db"
+[ "$(sqlite3 "$tmp/data.db" 'pragma integrity_check')" = ok ] || { echo "Бэкап битый" >&2; exit 1; }
+[ -f "$DATA/data.db" ] && cp "$DATA/data.db" "$DATA/data.db.before-restore-$(date +%F_%H%M%S)"
+rm -f "$DATA/data.db-wal" "$DATA/data.db-shm"
+mv "$tmp/data.db" "$DATA/data.db"
+echo "Восстановлено из $src: $(sqlite3 "$DATA/data.db" 'select count(*) from trucks') машин, $(sqlite3 "$DATA/data.db" 'select count(*) from dialogs') диалогов"

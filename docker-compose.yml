@@ -1,0 +1,48 @@
+# Прод: docker compose up -d --build   (.env лежит рядом, только на сервере)
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      COOKIE_SECURE: "1"
+      DEMO_SEED: "0"
+      LLM_PROXY_MODE: ""
+    volumes:
+      - data:/data            # data.db и записи звонков (recordings/)
+    expose: ["8010"]
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      SITE: ${SITE:?укажите SITE в .env — домен или <ip>.sslip.io}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [app]
+
+  backup:
+    build: ./deploy/backup
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: Europe/Moscow
+    volumes:
+      - data:/data
+      - backups:/backups
+
+  # Голосовой бот (ТЗ 2.2) — отдельный сервис, подключим после спайка с ВАТС:
+  # voice:
+  #   build: ./voice
+  #   restart: unless-stopped
+  #   env_file: .env
+
+volumes:
+  data:
+  backups:
+  caddy_data:
+  caddy_config:

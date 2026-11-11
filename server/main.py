@@ -66,7 +66,7 @@ DEFAULTS = {"vat": 22, "min_rate_km": 55, "threshold": 55, "scan_minutes": 5, "p
                             "чистыми — потом вежливо попробовать поднять."}
 DEFAULTS.update(calls.DEFAULTS)
 
-# Парк для демо: города/кузова — пример, правится на странице «Машины»
+# Парк для демо (DEMO_SEED=1): города/кузова — пример, правится на странице «Машины». На проде не вставляется.
 SEED = [
     ("Volvo FH · А742КС", "Сергей", "Санкт-Петербург", 1, 59.9387, 30.3162, 150, 1, "тент", 2.7, 20, 0),
     ("Scania R450 · В118ОР", "Андрей", "Тверь", 251, 56.8587, 35.9208, 150, 1, "тент", 3.0, 20, 1),
@@ -86,7 +86,7 @@ def settings():
     return s
 
 
-if not q("select id from trucks limit 1"):
+if os.environ.get("DEMO_SEED") == "1" and not q("select id from trucks limit 1"):  # демо-парк только локально
     for n, d, c, cid, lat, lon, rad, mask, body, h, cap, dd in SEED:
         DB.execute("insert into trucks(name,driver,city_name,city_id,lat,lon,radius,body_mask,body_name,height,capacity,free_from,status)"
                    " values(?,?,?,?,?,?,?,?,?,?,?,?,?)",

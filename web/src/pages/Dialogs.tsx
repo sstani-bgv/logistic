@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
-import { api, usePoll, rub, ago, type Dialog } from "@/lib/api"
+import { api, usePoll, rub, ago, ddmm, type Dialog, type Truck } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 const COLS = [
@@ -76,7 +76,12 @@ function ChatSheet({ d, onClose, onChange }: { d: Dialog | null; onClose: () => 
   const [text, setText] = useState("")
   const [busy, setBusy] = useState(false)
   const r = d?.load?.raw
-  const patch = async (body: object) => { if (d) { await api(`/dialogs/${d.id}`, { method: "PATCH", body }); onChange() } }
+  const patch = async (body: object) => {
+    if (!d) return
+    const r = await api<{ truck?: Truck | null }>(`/dialogs/${d.id}`, { method: "PATCH", body })
+    if (r.truck) toast.success(`${r.truck.name} занята до ${ddmm(r.truck.free_from)}, освободится в ${r.truck.city_name}`)
+    onChange()
+  }
   const send = async () => {
     if (!d || !text.trim()) return
     setBusy(true)

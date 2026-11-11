@@ -2,7 +2,7 @@
 import os
 import httpx
 
-TOKEN = os.environ["ATI_TOKEN"]
+TOKEN = os.environ.get("ATI_TOKEN", "")  # без токена модуль импортируется (тесты, мок), запросы вернут 401
 HEAD = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/json",
         "User-Agent": "ati_integrator_5464422"}
 client = httpx.AsyncClient(headers=HEAD, timeout=30, follow_redirects=True)

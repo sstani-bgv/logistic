@@ -21,7 +21,7 @@ export type Load = {
 }
 export type Truck = {
   id: number; name: string; driver: string; city_name: string; radius: number; body_mask: number; body_name: string
-  height: number; capacity: number; free_from: string; active: number; relevant: number
+  height: number; capacity: number; free_from: string; active: number; relevant: number; status: "free" | "busy"
 }
 export type Msg = { id: string; mine: number; text: string; ts: number }
 export type Dialog = {

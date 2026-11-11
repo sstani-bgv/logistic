@@ -1,6 +1,7 @@
 """Логист-ассистент: мониторинг биржи АТИ, отбор, ИИ-переговоры, база знаний."""
 import asyncio
 import json
+import os
 import sqlite3
 import time
 from contextlib import asynccontextmanager
@@ -14,10 +15,13 @@ from pydantic import BaseModel
 
 import agent
 import ati
+import fleet
 from scoring import score
 
 ROOT = Path(__file__).parent
-DB = sqlite3.connect(ROOT / "data.db", check_same_thread=False, isolation_level=None)
+DATA_DIR = Path(os.environ.get("DATA_DIR", ROOT))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+DB = sqlite3.connect(DATA_DIR / "data.db", check_same_thread=False, isolation_level=None)
 DB.row_factory = sqlite3.Row
 DB.executescript("""
 create table if not exists trucks(id integer primary key, name text, driver text, city_name text, city_id int,
@@ -33,6 +37,16 @@ create table if not exists messages(id text primary key, dialog_id int, mine int
 create table if not exists kv(k text primary key, v text);
 create table if not exists scans(ts real, truck_id int, seen int, total int);
 """)
+
+
+def migrate():
+    """Новые колонки для старых баз (create table if not exists их не добавит)."""
+    cols = {r[1] for r in DB.execute("pragma table_info(trucks)")}
+    if "status" not in cols:
+        DB.execute("alter table trucks add column status text default 'free'")
+
+
+migrate()
 DEFAULTS = {"vat": 22, "min_rate_km": 55, "threshold": 55, "scan_minutes": 5, "pages": 4, "send_enabled": True,
             # агент сам берёт лучшие грузы; лимиты — чтобы не спамить биржу
             "auto_start": True, "auto_score": 85, "auto_per_cycle": 2, "auto_daily": 10,
@@ -63,9 +77,10 @@ def settings():
 
 if not q("select id from trucks limit 1"):
     for n, d, c, cid, lat, lon, rad, mask, body, h, cap, dd in SEED:
-        DB.execute("insert into trucks(name,driver,city_name,city_id,lat,lon,radius,body_mask,body_name,height,capacity,free_from)"
-                   " values(?,?,?,?,?,?,?,?,?,?,?,?)",
-                   (n, d, c, cid, lat, lon, rad, mask, body, h, cap, (date.today() + timedelta(days=dd)).isoformat()))
+        DB.execute("insert into trucks(name,driver,city_name,city_id,lat,lon,radius,body_mask,body_name,height,capacity,free_from,status)"
+                   " values(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (n, d, c, cid, lat, lon, rad, mask, body, h, cap, (date.today() + timedelta(days=dd)).isoformat(),
+                    "busy" if dd else "free"))
 
 ME = {}
 TASKS = set()  # держим ссылки, иначе asyncio может собрать задачу до завершения
@@ -112,7 +127,10 @@ def rescore():
 
 async def monitor():
     while True:
-        for t in q("select * from trucks where active=1"):
+        for tid in fleet.release_due(DB):
+            log(f"Машина #{tid} освободилась по дате — снова ищем грузы")
+        where, args = fleet.scan_filter()
+        for t in q(f"select * from trucks where {where}", *args):
             try:
                 await scan_truck(t)
             except Exception as e:
@@ -350,24 +368,61 @@ async def send_manual(did: int, b: Text):
     return {"ok": True}
 
 
+DIALOG_STATUSES = ("writing", "waiting", "ready", "declined", "taken")
+
+
 class DStatus(BaseModel):
     status: str | None = None
     auto: bool | None = None
 
 
 @app.patch("/api/dialogs/{did}")
-def patch_dialog(did: int, b: DStatus):
+async def patch_dialog(did: int, b: DStatus):
+    d = q("select * from dialogs where id=?", did)
+    if not d:
+        raise HTTPException(404)
+    truck = None
     if b.status:
+        if b.status not in DIALOG_STATUSES:
+            raise HTTPException(400, f"Статус должен быть одним из {DIALOG_STATUSES}")
         DB.execute("update dialogs set status=?, updated=? where id=?", (b.status, time.time(), did))
-        lid = q("select load_id from dialogs where id=?", did)[0]["load_id"]
+        lid = d[0]["load_id"]
         DB.execute("update loads set status=? where id=?", ({"taken": "taken", "declined": "declined"}.get(b.status, "dialog"), lid))
+        if b.status == "taken" and d[0]["status"] != "taken":
+            truck = await occupy_truck(lid)
     if b.auto is not None:
         DB.execute("update dialogs set auto=? where id=?", (int(b.auto), did))
-    return {"ok": True}
+    return {"ok": True, "truck": truck}
+
+
+async def occupy_truck(lid):
+    """«Взяли груз»: машина занята до выгрузки, освободится в городе выгрузки."""
+    l = q("select * from loads where id=?", lid)
+    if not l or not l[0]["truck_id"]:
+        return None
+    t = q("select * from trucks where id=?", l[0]["truck_id"])[0]
+    u = fleet.busy_until(json.loads(l[0]["raw"]), json.loads(l[0]["metrics"] or "{}"))
+    city_name = u["city_name"] or t["city_name"]
+    city_id, lat, lon = u["city_id"], u["lat"], u["lon"]
+    if city_name != t["city_name"] and not city_id:
+        try:
+            c = await city(city_name)
+            city_id, lat, lon = c["CityId"], lat or c["Latitude"], lon or c["Longitude"]
+        except Exception as e:  # справочник недоступен — логист поправит город руками
+            log(f"Не нашёл город выгрузки «{city_name}» в справочнике АТИ: {e}", "error")
+    if not city_id:
+        city_name, city_id, lat, lon = t["city_name"], t["city_id"], t["lat"], t["lon"]
+    DB.execute("update trucks set status='busy', city_name=?, city_id=?, lat=?, lon=?, free_from=? where id=?",
+               (city_name, city_id, lat if lat is not None else t["lat"], lon if lon is not None else t["lon"],
+                u["free_from"], t["id"]))
+    rescore()
+    log(f"{t['name']} занята до {u['free_from']}, освободится в {city_name}", "info")
+    return q("select * from trucks where id=?", t["id"])[0]
 
 
 @app.get("/api/trucks")
 def trucks():
+    fleet.release_due(DB)
     return q("select t.*, (select count(*) from loads l where l.truck_id=t.id and l.verdict='relevant' and l.status='new') relevant"
              " from trucks t order by id")
 
@@ -383,6 +438,7 @@ class Truck(BaseModel):
     capacity: float = 20
     free_from: str
     active: bool = True
+    status: str = "free"
 
 
 async def city(name):
@@ -397,10 +453,12 @@ async def city(name):
 @app.post("/api/trucks")
 async def add_truck(b: Truck):
     c = await city(b.city_name)
-    DB.execute("insert into trucks(name,driver,city_name,city_id,lat,lon,radius,body_mask,body_name,height,capacity,free_from,active)"
-               " values(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    check_status(b.status)
+    st, ff = form_status(b.status, b.free_from)
+    DB.execute("insert into trucks(name,driver,city_name,city_id,lat,lon,radius,body_mask,body_name,height,capacity,free_from,active,status)"
+               " values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                (b.name, b.driver, c["CityName"], c["CityId"], c["Latitude"], c["Longitude"], b.radius, b.body_mask,
-                b.body_name, b.height, b.capacity, b.free_from, int(b.active)))
+                b.body_name, b.height, b.capacity, ff, int(b.active), st))
     return {"ok": True}
 
 
@@ -410,12 +468,53 @@ async def edit_truck(tid: int, b: Truck):
     c = {"CityName": t["city_name"], "CityId": t["city_id"], "Latitude": t["lat"], "Longitude": t["lon"]}
     if b.city_name != t["city_name"]:
         c = await city(b.city_name)
+    check_status(b.status)
+    st, ff = form_status(b.status, b.free_from)
     DB.execute("update trucks set name=?,driver=?,city_name=?,city_id=?,lat=?,lon=?,radius=?,body_mask=?,body_name=?,"
-               "height=?,capacity=?,free_from=?,active=? where id=?",
+               "height=?,capacity=?,free_from=?,active=?,status=? where id=?",
                (b.name, b.driver, c["CityName"], c["CityId"], c["Latitude"], c["Longitude"], b.radius, b.body_mask,
-                b.body_name, b.height, b.capacity, b.free_from, int(b.active), tid))
+                b.body_name, b.height, b.capacity, ff, int(b.active), st, tid))
     rescore()
     return {"ok": True}
+
+
+def normalize_free_from(status, free_from):
+    """free — не позже сегодня; busy — хотя бы завтра, иначе release_due тут же снимет занятость."""
+    today = date.today()
+    if status == "free" and (free_from or "") > today.isoformat():
+        return today.isoformat()
+    if status == "busy" and (free_from or "") <= today.isoformat():
+        return (today + timedelta(days=1)).isoformat()
+    return free_from
+
+
+def form_status(status, free_from):
+    """Форма машины: дата освобождения в будущем = машина занята до неё."""
+    if (free_from or "") > date.today().isoformat():
+        return "busy", free_from
+    return status, normalize_free_from(status, free_from)
+
+
+def check_status(s):
+    if s not in ("free", "busy"):
+        raise HTTPException(400, "Статус машины: free или busy")
+
+
+class TruckStatus(BaseModel):
+    status: str
+
+
+@app.patch("/api/trucks/{tid}")
+def set_truck_status(tid: int, b: TruckStatus):
+    """Быстрый переключатель на карточке. «Свободна» = свободна сегодня, если дата освобождения была в будущем."""
+    check_status(b.status)
+    t = q("select * from trucks where id=?", tid)
+    if not t:
+        raise HTTPException(404)
+    free_from = normalize_free_from(b.status, t[0]["free_from"])
+    DB.execute("update trucks set status=?, free_from=? where id=?", (b.status, free_from, tid))
+    rescore()
+    return q("select * from trucks where id=?", tid)[0]
 
 
 @app.post("/api/trucks/{tid}/scan")

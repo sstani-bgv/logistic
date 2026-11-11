@@ -9,12 +9,21 @@ import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { api, usePoll, ddmm, type Truck } from "@/lib/api"
 
-const EMPTY = { id: 0, name: "", driver: "", city_name: "", radius: 150, body_mask: 1, body_name: "тент", height: 2.7, capacity: 20, free_from: new Date().toISOString().slice(0, 10), active: 1, relevant: 0 }
+const EMPTY = { id: 0, name: "", driver: "", city_name: "", radius: 150, body_mask: 1, body_name: "тент", height: 2.7, capacity: 20, free_from: new Date().toISOString().slice(0, 10), active: 1, relevant: 0, status: "free" as const }
 
 export default function TrucksPage() {
   const { data, reload } = usePoll<Truck[]>("/trucks", 8000)
   const [edit, setEdit] = useState<Truck | null>(null)
   const [scanning, setScanning] = useState<number | null>(null)
+  const [toggling, setToggling] = useState<number | null>(null)
+  const toggle = async (t: Truck, free: boolean) => {
+    setToggling(t.id)
+    try {
+      const r = await api<Truck>(`/trucks/${t.id}`, { method: "PATCH", body: { status: free ? "free" : "busy" } })
+      toast.success(free ? `${t.name} свободна — ищем грузы` : `${t.name} занята до ${ddmm(r.free_from)} — поправьте дату и город, если нужно`)
+      reload()
+    } catch (e) { toast.error(String(e)) } finally { setToggling(null) }
+  }
   const scan = async (t: Truck) => {
     setScanning(t.id)
     try { await api(`/trucks/${t.id}/scan`, { method: "POST" }); toast.success(`Биржа просмотрена для ${t.name}`); reload() }
@@ -37,10 +46,15 @@ export default function TrucksPage() {
                 <div className="font-semibold">{t.name}</div>
                 <div className="text-sm text-muted-foreground">{t.driver && `${t.driver} · `}{t.body_name}, {t.capacity} т, высота {t.height} м</div>
               </div>
-              {t.active ? <Badge variant="secondary">ищем груз</Badge> : <Badge variant="outline">на паузе</Badge>}
+              {!t.active ? <Badge variant="outline">на паузе</Badge>
+                : t.status === "busy" ? <Badge variant="outline">занята</Badge> : <Badge variant="secondary">ищем груз</Badge>}
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch id={`free-${t.id}`} checked={t.status !== "busy"} disabled={toggling === t.id} onCheckedChange={(v) => toggle(t, v)} />
+              <Label htmlFor={`free-${t.id}`} className="text-sm">{t.status === "busy" ? "Занята" : "Свободна"}</Label>
             </div>
             <div className="grid grid-cols-3 gap-2 rounded-lg bg-muted/50 p-3 text-sm">
-              <div><div className="text-xs text-muted-foreground">Свободна</div><div className="font-medium">{t.city_name}</div></div>
+              <div><div className="text-xs text-muted-foreground">{t.status === "busy" ? "Освободится в" : "Свободна в"}</div><div className="font-medium">{t.city_name}</div></div>
               <div><div className="text-xs text-muted-foreground">С даты</div><div className="font-medium">{ddmm(t.free_from)}</div></div>
               <div><div className="text-xs text-muted-foreground">Радиус</div><div className="num font-medium">{t.radius} км</div></div>
             </div>
@@ -82,7 +96,7 @@ function TruckDialog({ t, onClose, onDone }: { t: Truck | null; onClose: () => v
         <DialogHeader><DialogTitle>{cur?.id ? "Машина" : "Новая машина"}</DialogTitle></DialogHeader>
         <div className="grid grid-cols-2 gap-3">
           {field("name", "Машина и госномер")}{field("driver", "Водитель")}
-          {field("city_name", "Где освобождается")}{field("free_from", "С какой даты", "date")}
+          {field("city_name", "Где освобождается")}{field("free_from", "С какой даты (в будущем — занята)", "date")}
           {field("radius", "Радиус поиска, км", "number")}{field("height", "Высота кузова, м", "number")}
           {field("capacity", "Грузоподъёмность, т", "number")}{field("body_name", "Кузов")}
         </div>

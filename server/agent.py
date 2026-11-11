@@ -1,8 +1,5 @@
-"""ИИ-агент на Codex CLI: ведёт переписку с заказчиком и превращает объяснения логиста в правила."""
-import asyncio
-import json
-import os
-import tempfile
+"""ИИ-агент на OpenAI-совместимом API (см. llm.py): ведёт переписку с заказчиком и превращает объяснения логиста в правила."""
+from llm import complete
 
 NEGOTIATE_SCHEMA = {
     "type": "object", "additionalProperties": False,
@@ -32,23 +29,6 @@ RULE_SCHEMA = {
 }
 
 
-async def codex(prompt, schema):
-    with tempfile.TemporaryDirectory() as d:
-        sp, out = os.path.join(d, "s.json"), os.path.join(d, "out.json")
-        with open(sp, "w") as f:
-            json.dump(schema, f)
-        p = await asyncio.create_subprocess_exec(
-            "codex", "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only",
-            "-C", d, "--output-schema", sp, "-o", out, "-",
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE)
-        _, err = await asyncio.wait_for(p.communicate(prompt.encode()), 240)
-        if p.returncode:
-            raise RuntimeError(err.decode()[-500:])
-        with open(out) as f:
-            return json.load(f)
-
-
 def describe(load, m):
     ld, un, c, firm = load["loading"], load["unloading"], load["load"], load.get("firm") or {}
     price = f"{m['gross']} ₽ ({m['money']}; чистыми {m['net']} ₽)" if m.get("gross") else "запрос ставки"
@@ -76,7 +56,7 @@ async def negotiate(load, metrics, truck, goal, chat, notes, me_name):
 - status: "ready" — цель достигнута, логисту остаётся позвонить и подтвердить; "declined" — груз уже ушёл или условия точно не подходят; иначе "waiting".
 - facts: что уже известно (актуальность, итоговая ставка, форма оплаты, точный адрес, время погрузки, прочее); null — если неизвестно.
 - summary: одна строка для логиста, что сейчас происходит."""
-    return await codex(prompt, NEGOTIATE_SCHEMA)
+    return await complete(prompt, NEGOTIATE_SCHEMA)
 
 
 async def learn_rule(reason, load=None, metrics=None):
@@ -92,4 +72,4 @@ load_city / unload_city (город, подстрока), note (подстрок
 Если в объяснении есть город, тип груза или фирма — правило всегда по этому полю; условия вроде «зимой» или «обычно» превращай в штраф (block=false, delta от -30 до -15), а не в заметку.
 value — что искать (в нижнем регистре). block — true, если такие грузы вообще не показывать; иначе false и delta — штраф/бонус к оценке от -30 до +20.
 text — короткая формулировка правила для базы знаний, от лица компании (например: «Не возим кирпич — бьётся тент»)."""
-    return await codex(prompt, RULE_SCHEMA)
+    return await complete(prompt, RULE_SCHEMA)

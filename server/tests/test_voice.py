@@ -1,6 +1,7 @@
 """Голосовой релей на поддельном Yandex Realtime — без сети и без трат."""
 import asyncio
 import json
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -152,3 +153,40 @@ def test_voice_prompt_forbids_agreeing():
     import agent
     v = agent.VOICE.split("\n")[1]
     assert v.startswith("ГЛАВНОЕ ПРАВИЛО") and "«подходит»" in v and "«берём»" in v
+
+
+def test_greeting_has_route_and_goes_first(env, monkeypatch):
+    import agent
+    g = agent.greeting(load_raw(), "Иван")
+    assert g.startswith("Здравствуйте! Я помощник логиста Иван") and "Санкт-Петербург — Москва" in g
+    assert agent.greeting({}, "Иван").endswith("на АТИ. Вам удобно сейчас говорить?")  # без маршрута — без «: »
+    fake = FakeYandex()
+    monkeypatch.setattr(voice, "CONNECT", fake)
+
+    async def recv():
+        return None
+    asyncio.run(voice.talk(recv, lambda ev: asyncio.sleep(0), "И", voice.cfg(), greeting=g))
+    assert fake.got[1] == {"type": "response.create", "response": {"instructions": f"Начни звонок этой фразой, почти дословно: {g}"}}
+
+
+def test_call_ends_after_goodbye(env, monkeypatch):
+    fake = FakeYandex([{"type": "conversation.item.input_audio_transcription.completed", "transcript": "Всё, жду звонка"},
+                       {"type": "response.created"},
+                       {"type": "response.output_audio.delta", "delta": "AAAA", "item_id": "i2"},
+                       {"type": "response.output_audio_transcript.delta", "delta": "Спасибо, логист перезвонит. До свидания!"},
+                       {"type": "response.done"}])
+    monkeypatch.setattr(voice, "CONNECT", fake)
+    monkeypatch.setenv("VOICE_IDLE_SEC", "30")
+    sent = [{"type": "input_audio_buffer.append", "audio": "QQ=="}]
+
+    async def recv():
+        if sent:
+            return sent.pop()
+        await asyncio.sleep(60)  # собеседник молчит и трубку не кладёт
+
+    async def send(ev):
+        pass
+    t0 = time.monotonic()
+    reason, turns, _ = asyncio.run(voice.talk(recv, send, "И", voice.cfg()))
+    assert reason == "bye" and time.monotonic() - t0 < 5  # не ждём 30 секунд тишины за деньги
+    assert turns[-1]["text"].endswith("До свидания!")

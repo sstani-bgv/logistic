@@ -9,6 +9,7 @@
 import asyncio
 import json
 import os
+import re
 import time
 
 import websockets
@@ -119,20 +120,29 @@ def fatal(err, heard):
     return not heard
 
 
-async def talk(recv, send, instructions, c=None):
+BYE = re.compile(r"(?i)(до свидания|всего доброго|всего хорошего|хорошего дня|до связи)")
+
+
+async def talk(recv, send, instructions, c=None, greeting=None):
     """Один разговор. recv() -> dict | None (None — та сторона положила трубку), send(dict) — событие той стороне.
-    -> (причина конца, реплики, секунды). Причины: hangup | limit | idle | error."""
+    -> (причина конца, реплики, секунды). Причины: hangup | bye (агент попрощался) | limit | idle | error.
+    greeting — готовая первая фраза: модель начинает с неё почти дословно."""
     c = c or cfg()
     turns, buf = [], {}
     t0 = last = time.monotonic()
     heard = False
+    said = 0.0  # секунд звука в текущем ответе агента
+    bye_at = None  # агент попрощался: положить трубку, когда договорит
     async with CONNECT(c["url"], additional_headers={"Authorization": f"Api-Key {c['key']}"},
                        max_size=4 * 1024 * 1024, open_timeout=15) as up:
         await up.send(json.dumps({"type": "session.update", "session": session(instructions, c)}))
-        await up.send(json.dumps({"type": "response.create"}))  # агент звонит — он и начинает разговор
+        first = {"type": "response.create"}  # агент звонит — он и начинает разговор
+        if greeting:
+            first["response"] = {"instructions": f"Начни звонок этой фразой, почти дословно: {greeting}"}
+        await up.send(json.dumps(first))
 
         async def down():
-            nonlocal last, heard
+            nonlocal last, heard, said, bye_at
             async for raw in up:
                 ev = json.loads(raw)
                 t = ev.get("type")
@@ -140,7 +150,14 @@ async def talk(recv, send, instructions, c=None):
                     if fatal(ev.get("error") or {}, heard):
                         return "error"
                     continue
+                n = len(turns)
                 collect(ev, turns, buf)
+                if t == "response.created":
+                    said, bye_at = 0.0, None  # заговорил снова — значит, не прощается
+                elif t == "response.output_audio.delta":
+                    said += len(ev.get("delta") or "") * 3 / 4 / (2 * RATE)
+                elif t == "response.done" and len(turns) > n and turns[-1]["who"] == "Агент" and BYE.search(turns[-1]["text"]):
+                    bye_at = time.monotonic() + said + 1.5
                 if t in TO_CLIENT:
                     last, heard = time.monotonic(), heard or t == "response.output_audio.delta"
                     await send({k: ev[k] for k in ("type", "delta", "item_id") if k in ev})
@@ -156,6 +173,8 @@ async def talk(recv, send, instructions, c=None):
             while True:
                 await asyncio.sleep(1)
                 now = time.monotonic()
+                if bye_at and now >= bye_at:
+                    return "bye"
                 if now - t0 >= c["call_sec"]:
                     return "limit"
                 if now - last >= c["idle_sec"]:

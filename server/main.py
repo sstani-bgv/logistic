@@ -282,6 +282,18 @@ def instructions_for_call(d):
     return agent.call_instructions(load, m, t, goal, chat, "", ME.get("name", "логист"))
 
 
+def greeting_for_call(d):
+    load, *_ = prompt_inputs(d)
+    return agent.greeting(load, ME.get("name", "логист"))
+
+
+def safe_greeting(d):
+    try:
+        return greeting_for_call(d)
+    except Exception:
+        return None
+
+
 def safe_instructions(d):
     try:
         return instructions_for_call(d)
@@ -444,7 +456,7 @@ async def start_call(d, manual=False):
                                       f"{raw.get('unloading', {}).get('location', {}).get('city', '')}",
            "load": raw, "facts": json.loads(d.get("facts") or "{}"),  # для голосового бота: та же цель и контекст
            "chat": [x["text"] for x in q("select text from messages where dialog_id=? order by ts", d["id"])][-10:],
-           "instructions": safe_instructions(d)}
+           "instructions": safe_instructions(d), "greeting": safe_greeting(d)}
     try:
         pid = await PHONE.start(call, ctx)
         if not pid:  # ВАТС приняла команду, но id не вернула — попытку считаем (иначе перезвон каждые 30 минут)
@@ -1014,7 +1026,7 @@ async def send_manual(did: int, b: Text):
 # ---------- тестовый голосовой звонок: логист играет заказчика, агент говорит по сценарию диалога ----------
 VOICE_LIVE = set()
 VOICE_MAX_LIVE = 2
-VOICE_END = {"hangup": "Звонок завершён.", "limit": "Время тестового звонка вышло.",
+VOICE_END = {"hangup": "Звонок завершён.", "bye": "Агент попрощался — звонок завершён.", "limit": "Время тестового звонка вышло.",
              "idle": "Звонок завершён: вас не слышно.", "error": "Связь с голосовой моделью прервалась."}
 
 
@@ -1048,7 +1060,7 @@ async def voice_test(ws: WebSocket, did: int):
         return await end(f"Дневной лимит на тестовые звонки ({c['rub_day']:g} ₽) исчерпан.")
     if did in VOICE_LIVE or len(VOICE_LIVE) >= VOICE_MAX_LIVE:
         return await end("Сейчас уже идёт тестовый звонок — попробуйте через минуту.")
-    instructions = instructions_for_call(d[0])
+    instructions, hello = instructions_for_call(d[0]), greeting_for_call(d[0])
 
     async def recv():
         try:
@@ -1071,7 +1083,7 @@ async def voice_test(ws: WebSocket, did: int):
     VOICE_LIVE.add(did)
     reason, turns, why, t0 = "error", [], "", time.monotonic()
     try:
-        reason, turns, _ = await voice.talk(recv, send, instructions, {**c, "call_sec": allow})
+        reason, turns, _ = await voice.talk(recv, send, instructions, {**c, "call_sec": allow}, greeting=hello)
     except Exception as e:
         why = voice.explain(e)
         log(f"Тестовый звонок по диалогу #{did}: {why}", "error")

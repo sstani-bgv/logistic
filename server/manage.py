@@ -48,7 +48,7 @@ async def check_ati():
     await step("аккаунт (firms/contacts)", ati.me())
     truck = {"city_id": 1, "radius": 100, "body_mask": 1}  # СПб — проверка доступа к поиску
     await step("поиск грузов", _count(ati.search(truck, 1)))
-    await step("мессенджер (список чатов)", _chats(ati))
+    await step("мессенджер (доступ)", _chats(ati))
     print("Тариф даёт всё нужное" if ok else "Не хватает доступа — проверьте тариф/токен АТИ")
     return ok
 
@@ -59,7 +59,10 @@ async def _count(coro):
 
 
 async def _chats(ati):
-    r = await ati.client.get("https://api.ati.su/messenger/1.1/chats/", params={"num": 1})
+    """Списка чатов в API нет; история несуществующего чата: 404 «subscription_not_found» = доступ есть."""
+    r = await ati.client.get("https://api.ati.su/messenger/1.1/chats/0/history/", params={"num": 1})
+    if r.status_code == 404 and "subscription_not_found" in r.text:
+        return "доступен"
     r.raise_for_status()
     return "доступен"
 

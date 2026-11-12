@@ -353,22 +353,6 @@ def test_no_chat_but_phone_creates_call_dialog(monkeypatch):
         asyncio.run(main.start_dialog(main.q("select * from loads where id='N1'")[0], "цель"))
 
 
-def test_phone_from_firm_card(monkeypatch):
-    asked = []
-
-    async def card(firm_id):
-        asked.append(firm_id)
-        return [{"id": 5, "name": "Пётр", "mobile_phone": "+7 (921) 000-11-22"}]
-    monkeypatch.setattr(main.ati, "firm_contacts", card)
-    did = mk_dialog(phone=None)
-    raw = json.loads(main.q("select raw from loads where id='L1'")[0]["raw"])
-    assert asyncio.run(main.phone_from_firm_card("L1", raw)) == "+79210001122"
-    stored = json.loads(main.q("select raw from loads where id='L1'")[0]["raw"])
-    assert calls.phone_of(stored) == "+79210001122" and stored["firm"]["phones_checked"]
-    assert asyncio.run(main.phone_from_firm_card("L1", stored)) is None and asked == [1]  # второй раз не спрашиваем
-    assert did
-
-
 def test_dnc_from_chat_message():
     did = mk_dialog()
     main.dnc_from_dialog(main.q("select * from dialogs where id=?", did)[0], "написали в чате")

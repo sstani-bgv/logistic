@@ -253,7 +253,7 @@ async def start_call(d, manual=False):
     """Поставить звонок по диалогу. -> (call | None, причина отказа | None)."""
     l = q("select raw from loads where id=?", d["load_id"])
     raw = json.loads(l[0]["raw"]) if l else {}
-    phone = calls.phone_of(raw) or await phone_from_firm_card(d["load_id"], raw)
+    phone = calls.phone_of(raw)  # телефоны приходят в выдаче АТИ: firm.contacts[].phones[]
     why = calls.blocked_reason(DB, settings(), phone, d["id"], manual=manual)
     if why:
         return None, why
@@ -278,23 +278,6 @@ async def start_call(d, manual=False):
         return q("select * from calls where id=?", cid)[0], f"ошибка телефонии: {e}"
     log(f"{'Звоним' if not manual else by + ': звоним'} {phone} по диалогу #{d['id']}", "agent")
     return q("select * from calls where id=?", cid)[0], None
-
-
-async def phone_from_firm_card(load_id, raw):
-    """Телефона нет в выдаче — берём из карточки фирмы АТИ и запоминаем в грузе, чтобы не спрашивать снова."""
-    firm = raw.get("firm") or {}
-    if not firm.get("id") or firm.get("phones_checked"):
-        return None
-    try:
-        contacts = await ati.firm_contacts(firm["id"])
-    except Exception as e:
-        log(f"Карточка фирмы {firm.get('name')} в АТИ недоступна: {e}", "error")
-        return None
-    firm["contacts"] = (firm.get("contacts") or []) + [c for c in contacts if isinstance(c, dict)]
-    firm["phones_checked"] = True
-    raw["firm"] = firm
-    DB.execute("update loads set raw=? where id=?", (json.dumps(raw, ensure_ascii=False), load_id))
-    return calls.phone_of(raw)
 
 
 def clean_result(res):

@@ -51,12 +51,3 @@ async def history(chat_id, since=None):
     r.raise_for_status()
     return r.json()
 
-
-async def firm_contacts(firm_id):
-    """Контакты фирмы из карточки АТИ — если в выдаче груза телефона нет.
-    ПРОВЕРИТЬ на токене клиента: путь и поля ответа (phone / mobile_phone / phones[]).
-    """
-    r = await client.get(f"https://api.ati.su/v1.0/firms/{firm_id}/contacts")
-    r.raise_for_status()
-    j = r.json()
-    return j if isinstance(j, list) else j.get("contacts", [])

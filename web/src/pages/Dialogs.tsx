@@ -21,7 +21,7 @@ const FACTS: Record<string, string> = { actual: "Актуальность", pric
 
 export default function DialogsPage() {
   const { data, reload, offline } = usePoll<Dialog[]>("/dialogs", 4000)
-  const { data: st } = usePoll<{ voice_ready?: boolean }>("/settings", 60000)
+  const { data: st } = usePoll<{ voice_ready?: boolean; call_enabled?: boolean }>("/settings", 60000)
   const [openId, setOpenId] = useState<number | null>(null)
   const open = data?.find((d) => d.id === openId) ?? null
   const [running, setRunning] = useState(false)
@@ -72,12 +72,12 @@ export default function DialogsPage() {
           )
         })}
       </div>
-      <ChatSheet key={openId ?? 0} d={open} voice={!!st?.voice_ready} onClose={() => setOpenId(null)} onChange={reload} />
+      <ChatSheet key={openId ?? 0} d={open} voice={!!st?.voice_ready} calls={!!st?.call_enabled} onClose={() => setOpenId(null)} onChange={reload} />
     </div>
   )
 }
 
-function ChatSheet({ d, voice, onClose, onChange }: { d: Dialog | null; voice: boolean; onClose: () => void; onChange: () => void }) {
+function ChatSheet({ d, voice, calls, onClose, onChange }: { d: Dialog | null; voice: boolean; calls: boolean; onClose: () => void; onChange: () => void }) {
   const [text, setText] = useState("")
   const [goalOpen, setGoalOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -130,7 +130,7 @@ function ChatSheet({ d, voice, onClose, onChange }: { d: Dialog | null; voice: b
             ))}
           </div>
           <div className="flex flex-col gap-2.5 p-5">
-            {d.messages.length === 0 && <div className="m-auto text-sm text-muted-foreground">{d.chat_id ? "Агент готовит первое сообщение…" : "Чат не открылся — агент позвонит по телефону"}</div>}
+            {d.messages.length === 0 && <div className="m-auto text-sm text-muted-foreground">{d.chat_id ? "Агент готовит первое сообщение…" : calls ? "Чат не открылся — агент позвонит по телефону" : "Чат не открылся, а звонки выключены — позвоните сами («Позвонить сейчас») или включите звонки"}</div>}
             {d.messages.map((m) => m.kind === "call" ? (
               <div key={m.id} className="w-full rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-2 text-sm dark:border-sky-900 dark:bg-sky-950/40">
                 <div className="mb-1 flex items-center gap-1 text-[11px] text-muted-foreground"><PhoneCall className="size-3" />расшифровка звонка</div>

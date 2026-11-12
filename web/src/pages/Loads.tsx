@@ -181,8 +181,11 @@ function DelegateDialog({ load, onClose, onDone }: { load: Load | null; onClose:
     if (!load || busy || !text.trim()) return
     setBusy(true)
     try {
-      await api(`/loads/${load.id}/agent`, { body: { goal: text } })
-      toast.success(st?.send_enabled === false ? "Агент готовит черновик" : "Агент взял груз в работу", { description: "Переписка — во вкладке «Переговоры»" })
+      const d = await api<{ chat_id: string | null; summary: string }>(`/loads/${load.id}/agent`, { body: { goal: text } })
+      if (!d.chat_id)  // чат в АТИ не открылся — честно говорим, что будет дальше
+        toast.warning("Чат с заказчиком не открылся", { description: `${d.summary}. ${st?.call_enabled ? "Агент позвонит." : "Звонки выключены — позвоните сами или включите звонки."}` })
+      else
+        toast.success(st?.send_enabled === false ? "Агент готовит черновик" : "Агент взял груз в работу", { description: "Переписка — во вкладке «Переговоры»" })
       setGoal(null); onClose(); onDone()
     } catch (e) { toast.error(errText(e)) } finally { setBusy(false) }
   }

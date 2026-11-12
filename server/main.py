@@ -186,8 +186,10 @@ async def scan_truck(t):
 
 
 def rescore():
+    """Пересчёт после правки правил, настроек или машины — только того, что видно в списках (свежее и «новое»):
+    старые объявления пересчитывать незачем, а на большой базе это замирание сервера на секунды."""
     st, rules, trucks = settings(), q("select * from rules where active=1"), {t["id"]: t for t in q("select * from trucks")}
-    for l in q("select id, truck_id, raw from loads"):
+    for l in q("select id, truck_id, raw from loads where status='new' and updated>=?", time.time() - LIST_TTL):
         t = trucks.get(l["truck_id"])
         if t:
             try:
@@ -199,9 +201,26 @@ def rescore():
                        (s, v, json.dumps(r, ensure_ascii=False), json.dumps(m), l["id"]))
 
 
+KEEP_LOADS_DAYS = 30
+
+
+def purge_old_loads(now=None):
+    """Старые объявления без переговоров и без отказа логиста — удаляем: база не пухнет, списки и пересчёт быстрые."""
+    edge = (now or time.time()) - KEEP_LOADS_DAYS * 86400
+    n = DB.execute("delete from loads where status='new' and coalesce(updated, first_seen, 0)<? "
+                   "and id not in (select load_id from dialogs)", (edge,)).rowcount
+    if n:
+        log(f"Удалено старых объявлений: {n} (старше {KEEP_LOADS_DAYS} дней, без переговоров)")
+    return n
+
+
 async def monitor():
+    last_purge = 0.0
     while True:
         try:
+            if time.time() - last_purge > 86400:
+                purge_old_loads()
+                last_purge = time.time()
             for tid in fleet.release_due(DB):
                 log(f"Машина #{tid} освободилась по дате — снова ищем грузы")
             where, args = fleet.scan_filter()
@@ -1222,11 +1241,20 @@ async def occupy_truck(lid):
     city_name = u["city_name"] or t["city_name"]
     city_id, lat, lon = u["city_id"], u["lat"], u["lon"]
     if city_name != t["city_name"] and not city_id:
-        try:
-            c = await city(city_name)
-            city_id, lat, lon = c["CityId"], lat or c["Latitude"], lon or c["Longitude"]
-        except Exception as e:  # справочник недоступен — логист поправит город руками
-            log(f"Не нашёл город выгрузки «{city_name}» в справочнике АТИ: {e}", "error")
+        found, why = None, ""
+        for name in dict.fromkeys([city_name, re.sub(r"\s+(г|д|п|с|х|ст|рп|пгт|пос|дер)\.?$", "", city_name or "").strip()]):
+            try:
+                found = await city(name)
+                break
+            except Exception as e:
+                why = getattr(e, "detail", None) or str(e)
+        if found:
+            city_id, lat, lon = found["CityId"], lat or found["Latitude"], lon or found["Longitude"]
+        elif big := fleet.nearest_large_city(json.loads(l[0]["raw"])):
+            city_id = big["cityId"]  # АТИ сама кладёт в груз ближайшие крупные города с кодами — ищем от ближайшего
+            log(f"Город выгрузки «{city_name}» не нашёл ({why}) — поиск от ближайшего крупного: {big['city']}, {big['distance']} км", "info")
+        else:  # справочник недоступен и подсказок нет — логист поправит город руками
+            log(f"Не нашёл город выгрузки «{city_name}» в справочнике АТИ: {why}", "error")
     t = q("select * from trucks where id=?", t["id"])[0]  # пока ходили в справочник, машину могли поправить
     if not city_id:  # город выгрузки не определили — оставляем текущее место целиком, логист поправит
         city_name, city_id, lat, lon = t["city_name"], t["city_id"], t["lat"], t["lon"]
@@ -1263,8 +1291,11 @@ class Truck(BaseModel):
 
 
 async def city(name):
-    r = await ati.client.get("https://api.ati.su/v1.0/dictionaries/cities", params={"name": name})
-    r.raise_for_status()
+    try:
+        r = await ati.client.get("https://api.ati.su/v1.0/dictionaries/cities", params={"name": name})
+        r.raise_for_status()
+    except httpx.HTTPError as e:  # не «Ошибка 500», а что именно: токен, сеть
+        raise HTTPException(502, f"Не удалось найти город в справочнике АТИ — {ati_err(e)}") from e
     c = (r.json() or [None])[0]
     if not c:
         raise HTTPException(400, f"Город «{name}» не найден в справочнике АТИ")

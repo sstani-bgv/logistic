@@ -128,8 +128,8 @@ def greeting(load, me_name):
     """Первая фраза звонка — готовая, с маршрутом: модель произносит её почти дословно (как на сайте Стаса)."""
     ld, un = (load.get("loading") or {}).get("location") or {}, (load.get("unloading") or {}).get("location") or {}
     route = f"{clean(ld.get('city') or '', 60)} — {clean(un.get('city') or '', 60)}".strip(" —")
-    return (f"Здравствуйте! Я помощник логиста {clean(me_name, 60)}, звоню по вашему грузу на АТИ"
-            f"{': ' + route if route else ''}. Вам удобно сейчас говорить?")
+    head = f"Здравствуйте! Я помощник логиста {clean(me_name, 60)}, звоню по вашему грузу на АТИ{': ' + route if route else ''}"
+    return head.rstrip(".") + ". Вам удобно сейчас говорить?"  # «Чехов г.» — без двойной точки
 
 
 def call_instructions(load, metrics, truck, goal, chat, notes, me_name):

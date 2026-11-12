@@ -96,7 +96,28 @@ function Shell({ me, onLogout }: { me: User; onLogout: () => void }) {
         </aside>
 
         <main className="min-w-0 flex-1">
-          <header className="border-b bg-card">
+          {/* Узкий экран (телефон, половина ноутбука): боковое меню скрыто — разделы полосой сверху */}
+          <div className="sticky top-0 z-30 border-b bg-card md:hidden">
+            <div className="flex items-center gap-2 px-4 pt-3">
+              <div className="grid size-7 place-items-center rounded-md bg-primary text-primary-foreground"><Radar className="size-4" /></div>
+              <span className="font-semibold">Диспетчер</span>
+              <span role="status" title={atiBad ? errors.find((p) => p.part === "ati")?.text : "АТИ"}
+                className={cn("ml-1 size-2 rounded-full", offline ? "bg-amber-500" : atiBad ? "bg-red-500" : s?.health?.ati_ok ? "bg-emerald-500" : "bg-muted-foreground")} />
+              <span className="ml-auto truncate text-xs text-muted-foreground">{me.login}</span>
+              <button onClick={onLogout} className="rounded-md p-1.5 text-muted-foreground hover:bg-muted" aria-label="Выйти" title="Выйти"><LogOut className="size-4" /></button>
+            </div>
+            <nav aria-label="Разделы" className="flex gap-1 overflow-x-auto px-3 py-2">
+              {nav.map((n) => (
+                <button key={n.id} onClick={() => setPage(n.id)} aria-current={page === n.id ? "page" : undefined}
+                  className={cn("flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-sm",
+                    page === n.id ? "bg-accent font-medium text-primary" : "text-muted-foreground hover:bg-muted")}>
+                  <n.icon className="size-4" />{n.label}
+                  {!!counters[n.id] && <span className="num text-xs text-primary">{counters[n.id]}</span>}
+                </button>
+              ))}
+            </nav>
+          </div>
+          <header className="hidden border-b bg-card md:block">
             <div className="grid grid-cols-2 gap-px bg-border lg:grid-cols-4">
               <Stat icon={Radar} label="Просмотрено ботом сегодня" value={s?.views} hint={`${s?.scans ?? 0} проходов по бирже`} />
               <Stat icon={Filter} label="Отсеяно автоматически" value={s?.filtered} hint="не подходят по правилам" />

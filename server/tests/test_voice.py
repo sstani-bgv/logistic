@@ -219,3 +219,9 @@ def test_collect_punctuation_fix_not_duplicated():
     voice.collect({"type": voice.HEARD, "transcript": "Да слушаю"}, turns, buf)
     voice.collect({"type": voice.HEARD, "transcript": "Да, слушаю вас."}, turns, buf)
     assert voice.transcript(turns) == "Заказчик: Да слушаю вас."
+
+
+def test_greeting_no_double_dot():
+    import agent
+    l = {"loading": {"location": {"city": "Санкт-Петербург"}}, "unloading": {"location": {"city": "Чехов г."}}}
+    assert agent.greeting(l, "Иван").endswith("Санкт-Петербург — Чехов г. Вам удобно сейчас говорить?")

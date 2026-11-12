@@ -33,6 +33,12 @@ def busy_until(load, metrics, today=None):
             "lat": loc.get("lat"), "lon": loc.get("lon"), "free_from": when.isoformat()}
 
 
+def nearest_large_city(load):
+    """Ближайший крупный город к месту выгрузки из подсказки АТИ (unloading.largeCities) — у него есть код города."""
+    cs = [c for c in ((load.get("unloading") or {}).get("largeCities") or []) if isinstance(c, dict) and c.get("cityId")]
+    return min(cs, key=lambda c: c.get("distance") or 0) if cs else None
+
+
 def release_due(db, today=None):
     """Занятые машины, у которых наступил free_from, становятся свободными. Возвращает их id."""
     t = (today or date.today()).isoformat()

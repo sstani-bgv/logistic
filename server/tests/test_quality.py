@@ -311,3 +311,58 @@ def test_default_goal_shown_with_number(make_client):
     kv(min_rate_km=60)
     s = make_client("logist").get("/api/settings").json()
     assert "{min_rate_km}" in s["default_goal"] and "{" not in s["default_goal_text"] and "60 ₽/км" in s["default_goal_text"]
+
+
+def test_add_truck_when_ati_down_says_why(monkeypatch, make_client):
+    async def down(*a, **k):
+        raise httpx.ConnectError("нет сети")
+    monkeypatch.setattr(main.ati.client, "get", down)
+    r = make_client("owner").post("/api/trucks", json={"name": "T", "city_name": "Москва", "free_from": "2026-11-12"})
+    assert r.status_code == 502 and "справочнике АТИ" in r.json()["detail"]
+
+
+def test_rescore_only_fresh_and_purge_old():
+    t = truck()
+    old, fresh = time.time() - 40 * 86400, time.time()
+    rows = [("OLD", old, "new"), ("OLDREJ", old, "rejected"), ("OLDDLG", old, "dialog"), ("FRESH", fresh, "new")]
+    for lid, upd, st in rows:
+        main.DB.execute("insert into loads(id,truck_id,raw,score,verdict,reasons,metrics,status,updated) values(?,?,?,?,?,?,?,?,?)",
+                        (lid, t, json.dumps({**load_raw(), "id": lid}), 0, "x", "[]", "{}", st, upd))
+    main.DB.execute("insert into dialogs(load_id,goal,status) values('OLDDLG','g','taken')")
+    main.rescore()
+    scored = {r["id"]: r["verdict"] for r in main.q("select id, verdict from loads")}
+    assert scored["FRESH"] != "x" and scored["OLD"] == "x"  # старое не пересчитываем
+    assert main.purge_old_loads() == 1
+    assert sorted(r["id"] for r in main.q("select id from loads")) == ["FRESH", "OLDDLG", "OLDREJ"]  # с переговорами и отказом — храним
+
+
+def test_taken_uses_large_city_hint_when_lookup_fails(monkeypatch, make_client):
+    tid = truck()
+    raw = {**load_raw(), "id": "LC"}
+    raw["unloading"] = {"location": {"city": "Чехов г.", "lat": 55.11, "lon": 37.51}, "firstDate": "2099-01-05T00:00:00",
+                        "largeCities": [{"cityId": 3611, "city": "Москва", "distance": 71}, {"cityId": 1257, "city": "Подольск", "distance": 34}]}
+    did = dialog(tid, raw, status="ready")
+
+    async def down(name):
+        raise main.HTTPException(502, "АТИ недоступна")
+    monkeypatch.setattr(main, "city", down)
+    assert make_client("logist").patch(f"/api/dialogs/{did}", json={"status": "taken"}).status_code == 200
+    t = main.q("select * from trucks where id=?", tid)[0]
+    assert (t["status"], t["city_name"], t["city_id"], t["lat"], t["free_from"]) == ("busy", "Чехов г.", 1257, 55.11, "2099-01-05")
+
+
+def test_taken_strips_city_suffix(monkeypatch, make_client):
+    tid = truck()
+    raw = {**load_raw(), "id": "SX"}
+    raw["unloading"] = {"location": {"city": "Колпино г.", "lat": 59.75, "lon": 30.6}, "firstDate": "2099-01-05T00:00:00"}
+    did = dialog(tid, raw, status="ready")
+    asked = []
+
+    async def lookup(name):
+        asked.append(name)
+        if name == "Колпино":
+            return {"CityName": "Колпино", "CityId": 1165, "Latitude": 59.75, "Longitude": 30.6}
+        raise main.HTTPException(400, "не найден")
+    monkeypatch.setattr(main, "city", lookup)
+    make_client("logist").patch(f"/api/dialogs/{did}", json={"status": "taken"})
+    assert asked == ["Колпино г.", "Колпино"] and main.q("select city_id from trucks where id=?", tid)[0]["city_id"] == 1165

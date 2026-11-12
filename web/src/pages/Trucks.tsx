@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { toast } from "sonner"
 import { Loader2, Pencil, Plus, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -16,19 +16,28 @@ export default function TrucksPage() {
   const [edit, setEdit] = useState<Truck | null>(null)
   const [scanning, setScanning] = useState<number | null>(null)
   const [toggling, setToggling] = useState<number | null>(null)
-  // пока PATCH и перезагрузка не закончились, показываем выбранное значение, а не устаревший ответ поллинга
-  const [pending, setPending] = useState<Record<number, Truck["status"]>>({})
+  // Сразу показываем выбор, а после ответа — то, что сервер записал (дату тоже), пока поллинг не догонит
+  const [pending, setPending] = useState<Record<number, Partial<Truck>>>({})
   const toggle = async (t: Truck, free: boolean) => {
     const status = free ? "free" : "busy"
-    setToggling(t.id); setPending((p) => ({ ...p, [t.id]: status }))
+    setToggling(t.id); setPending((p) => ({ ...p, [t.id]: { status } }))
     try {
       const r = await api<Truck>(`/trucks/${t.id}`, { method: "PATCH", body: { status } })
+      setPending((p) => ({ ...p, [t.id]: { status: r.status, free_from: r.free_from } }))
       toast.success(free ? `${t.name} свободна — ищем грузы` : `${t.name} занята до ${ddmm(r.free_from)} — поправьте дату и город, если нужно`)
       await reload()
-    } catch (e) { toast.error(errText(e)) } finally {
-      setToggling(null); setPending((p) => { const n = { ...p }; delete n[t.id]; return n })
-    }
+    } catch (e) {
+      toast.error(errText(e))
+      setPending((p) => { const n = { ...p }; delete n[t.id]; return n })
+    } finally { setToggling(null) }
   }
+  useEffect(() => {  // поллинг догнал записанное — подмена больше не нужна
+    setPending((p) => {
+      const n = { ...p }
+      for (const tr of data ?? []) if (n[tr.id] && n[tr.id].status === tr.status && (!n[tr.id].free_from || n[tr.id].free_from === tr.free_from)) delete n[tr.id]
+      return Object.keys(n).length === Object.keys(p).length ? p : n
+    })
+  }, [data])
   const scan = async (t: Truck) => {
     setScanning(t.id)
     try { await api(`/trucks/${t.id}/scan`, { method: "POST" }); toast.success(`Биржа просмотрена для ${t.name}`); reload() }
@@ -44,7 +53,7 @@ export default function TrucksPage() {
         <Button onClick={() => setEdit({ ...EMPTY })}><Plus />Добавить машину</Button>
       </div>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {data?.map((tr) => { const t = pending[tr.id] ? { ...tr, status: pending[tr.id] } : tr; return (
+        {data?.map((tr) => { const t = pending[tr.id] ? { ...tr, ...pending[tr.id] } : tr; return (
           <div key={t.id} className="flex flex-col gap-3 rounded-xl border bg-card p-4">
             <div className="flex items-start justify-between gap-2">
               <div>

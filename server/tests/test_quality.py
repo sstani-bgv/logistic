@@ -288,3 +288,8 @@ def test_backup_and_restore_scripts(tmp_path):
     before = (data / "data.db").read_bytes()
     r = subprocess.run(["bash", sh / "restore.sh", str(bad)], env=env, capture_output=True, text=True)
     assert r.returncode != 0 and (data / "data.db").read_bytes() == before  # битый бэкап базу не портит
+
+
+def test_empty_ati_token_message(monkeypatch):
+    monkeypatch.setattr(main.ati, "TOKEN", "")
+    assert "ATI_TOKEN не задан" in main.ati_err(httpx.LocalProtocolError("Illegal header value b'Bearer '"))

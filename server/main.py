@@ -133,6 +133,8 @@ def mark(part, ok, err=""):
 
 def ati_err(e):
     """Понятный текст ошибки АТИ (401/403 — токен)."""
+    if not ati.TOKEN:
+        return "ATI_TOKEN не задан в .env — поиск и переписка не работают"
     if isinstance(e, httpx.HTTPStatusError):
         code = e.response.status_code
         if code in (401, 403):

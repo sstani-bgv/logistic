@@ -43,6 +43,11 @@ function Shell({ me, onLogout }: { me: User; onLogout: () => void }) {
   const nav = NAV.filter((n) => !("owner" in n) || me.role === "owner")
   const [page, setPage] = useState<Page>(() => (nav.find((n) => n.id === location.hash.slice(1))?.id ?? "loads"))
   useEffect(() => { location.hash = page }, [page])
+  useEffect(() => {  // «назад/вперёд» в браузере и ссылки вида #dialogs переключают раздел
+    const go = () => { const id = location.hash.slice(1); if (nav.some((n) => n.id === id)) setPage(id as Page) }
+    window.addEventListener("hashchange", go)
+    return () => window.removeEventListener("hashchange", go)
+  }, [me.role])  // eslint-disable-line react-hooks/exhaustive-deps
   const { data: s, offline } = usePoll<Stats>("/stats", 4000)
   const { data: st } = usePoll<{ send_enabled?: boolean; auto_start?: boolean; call_enabled?: boolean }>("/settings", 30000)
   const agentOff = !!st && !st.send_enabled && !st.auto_start

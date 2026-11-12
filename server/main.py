@@ -72,9 +72,11 @@ def migrate():
 
 
 migrate()
-DEFAULTS = {"vat": 22, "min_rate_km": 55, "threshold": 55, "scan_minutes": 5, "pages": 4, "send_enabled": True,
+# На новой (и перенесённой) базе агент молчит: сначала знакомство с интерфейсом, потом владелец включает
+# переключателями в «Настройках» или командой `manage.py agent on`. Поиск и оценка грузов работают сразу.
+DEFAULTS = {"vat": 22, "min_rate_km": 55, "threshold": 55, "scan_minutes": 5, "pages": 4, "send_enabled": False,
             # агент сам берёт лучшие грузы; лимиты — чтобы не спамить биржу
-            "auto_start": True, "auto_score": 85, "auto_per_cycle": 1, "auto_daily": 3,  # старт у клиента — осторожно, потом поднять
+            "auto_start": False, "auto_score": 85, "auto_per_cycle": 1, "auto_daily": 3,  # старт у клиента — осторожно, потом поднять
             "default_goal": "Узнать то, чего нет в объявлении и что нужно для решения: актуален ли груз; если ставка «запрос» — "
                             "какую ставку и форму оплаты дают; точный адрес и время погрузки; особые требования (доверенность, "
                             "ремни, растентовка). Первое сообщение — 1–2 коротких вопроса, без торга. Если ставка ниже 55 ₽/км "
@@ -1164,7 +1166,7 @@ async def get_settings():
     u = auth.current()
     if u and u["role"] != "owner":  # логист настроек не видит — только цель агента для запуска диалога
         s = settings()
-        return {**{k: s[k] for k in ("default_goal", "goal_presets", "send_enabled", "call_enabled")}, "voice_ready": voice.cfg()["ready"]}
+        return {**{k: s[k] for k in ("default_goal", "goal_presets", "send_enabled", "auto_start", "call_enabled")}, "voice_ready": voice.cfg()["ready"]}
     return {**settings(), "voice_ready": voice.cfg()["ready"]}
 
 

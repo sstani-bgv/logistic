@@ -145,3 +145,24 @@ def test_user_patch_all_or_nothing(make_client):
     uid = c.post("/api/users", json={"login": "petr", "password": "password123", "role": "logist"}).json()["id"]
     assert c.patch(f"/api/users/{uid}", json={"role": "owner", "password": "short"}).status_code == 400
     assert main.q("select role from users where id=?", uid)[0]["role"] == "logist"  # роль не сменилась наполовину
+
+
+def test_agent_off_by_default():
+    s = main.settings()
+    assert not s["send_enabled"] and not s["auto_start"] and not s["call_enabled"]
+
+
+def test_manage_agent_switch(tmp_path):
+    import subprocess
+    import sys
+    env = {"DATA_DIR": str(tmp_path), "PATH": "/usr/bin:/bin"}
+    run = lambda *a: subprocess.run([sys.executable, "manage.py", *a], capture_output=True, text=True, env=env)
+    assert "✗ агент отправляет" in run("agent", "status").stdout
+    out = run("agent", "on").stdout
+    assert "✓ агент отправляет" in out and "✓ агент сам берёт" in out and "✗ агент звонит" in out
+    assert "✓ агент звонит" in run("calls", "on").stdout
+    out = run("agent", "off").stdout
+    assert "✗ агент отправляет" in out and "✓ агент звонит" in out
+    import sqlite3
+    db = sqlite3.connect(tmp_path / "data.db")
+    assert [r[0] for r in db.execute("select action from actions order by rowid")] == ["agent_on", "calls_on", "agent_off"]

@@ -192,6 +192,8 @@ def test_agent_step_respects_manual_taken(monkeypatch):
 
 def test_auto_start_skips_busy_trucks(monkeypatch):
     import asyncio
+    for k in ("send_enabled", "auto_start"):  # по умолчанию агент выключен
+        main.DB.execute("insert into kv values(?,'true') on conflict(k) do update set v='true'", (k,))
     busy = truck("busy", "busy", iso(5))
     raw = {**load_raw(), "firm": {"id": 1, "name": "F", "contacts": [{"id": 1, "name": "N"}]}}
     main.DB.execute("insert into loads(id,truck_id,raw,score,verdict,reasons,metrics,status,updated) values(?,?,?,?,?,?,?,?,?)",

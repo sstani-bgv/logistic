@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { BookOpenCheck, MessagesSquare, PackageSearch, Truck as TruckIcon, Radar, Clock, Filter, Sparkles, Settings as SettingsIcon, Users as UsersIcon, LogOut } from "lucide-react"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import { Button } from "@/components/ui/button"
 import { api, usePoll, ago, AUTH_EVENT, type Stats, type User } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import LoadsPage from "@/pages/Loads"
@@ -41,6 +42,8 @@ function Shell({ me, onLogout }: { me: User; onLogout: () => void }) {
   const [page, setPage] = useState<Page>(() => (nav.find((n) => n.id === location.hash.slice(1))?.id ?? "loads"))
   useEffect(() => { location.hash = page }, [page])
   const { data: s } = usePoll<Stats>("/stats", 4000)
+  const { data: st } = usePoll<{ send_enabled?: boolean; auto_start?: boolean }>("/settings", 30000)
+  const agentOff = !!st && !st.send_enabled && !st.auto_start
 
   const counters: Record<string, number | undefined> = { loads: s?.relevant, dialogs: s ? s.dialogs + s.ready : undefined, knowledge: s?.rules }
 
@@ -87,6 +90,13 @@ function Shell({ me, onLogout }: { me: User; onLogout: () => void }) {
           </header>
           <div className="flex gap-6 px-4 py-6 md:px-8">
             <div className="min-w-0 flex-1">
+              {agentOff && (
+                <div role="status" className="mb-5 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-950 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-100">
+                  <span className="min-w-0 flex-1"><b>Агент пока выключен.</b> Ассистент ищет и оценивает грузы, но никому не пишет и не звонит — можно спокойно осмотреться.
+                    {me.role === "owner" ? " Когда будете готовы — включите агента в настройках." : " Включает владелец."}</span>
+                  {me.role === "owner" && page !== "settings" && <Button size="sm" variant="outline" onClick={() => setPage("settings")}>Открыть настройки</Button>}
+                </div>
+              )}
               {page === "loads" && <LoadsPage />}
               {page === "dialogs" && <DialogsPage />}
               {page === "trucks" && <TrucksPage />}

@@ -3,6 +3,10 @@
   uv run python manage.py create-owner <login>    — первый владелец (пароль спросит; или env OWNER_PASSWORD)
   uv run python manage.py reset-password <login>  — сменить пароль и выкинуть сессии
   uv run python manage.py check-ati               — проверить токен и тариф АТИ: аккаунт, поиск, мессенджер
+  uv run python manage.py agent status|on|off     — агент пишет заказчикам и сам берёт грузы (по умолчанию выключен)
+  uv run python manage.py calls on|off            — агент звонит, если в чате молчат
+
+Работающее приложение подхватывает переключение само, перезапуск не нужен.
 """
 import getpass
 import os
@@ -67,7 +71,27 @@ async def _chats(ati):
     return "доступен"
 
 
+SWITCHES = {"agent": ("send_enabled", "auto_start"), "calls": ("call_enabled",)}
+LABELS = {"send_enabled": "агент отправляет сообщения", "auto_start": "агент сам берёт лучшие грузы", "call_enabled": "агент звонит"}
+
+
+def switch(what, mode):
+    c = db()
+    c.execute("create table if not exists kv(k text primary key, v text)")
+    if mode in ("on", "off"):
+        for k in SWITCHES[what]:
+            c.execute("insert into kv values(?,?) on conflict(k) do update set v=excluded.v", (k, "true" if mode == "on" else "false"))
+        c.execute("create table if not exists actions(ts real, user_id int, login text, action text, ref text, detail text)")
+        c.execute("insert into actions(ts,user_id,login,action,ref,detail) values(strftime('%s','now'),null,'manage.py',?,null,null)",
+                  (f"{what}_{mode}",))
+    vals = {r[0]: r[1] for r in c.execute("select k, v from kv")}
+    for k, label in LABELS.items():
+        print(f"{'✓' if vals.get(k) == 'true' else '✗'} {label}")
+
+
 def main(argv):
+    if len(argv) == 3 and argv[1] in SWITCHES and argv[2] in ("on", "off", "status"):
+        return switch(argv[1], argv[2])
     if len(argv) == 2 and argv[1] == "check-ati":
         import asyncio
         sys.exit(0 if asyncio.run(check_ati()) else 1)

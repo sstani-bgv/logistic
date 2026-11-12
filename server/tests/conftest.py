@@ -4,6 +4,10 @@ import tempfile
 # До импорта main: своя временная база и фиктивный токен АТИ — тесты не трогают data.db и сеть.
 os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="logistic-test-")
 os.environ.setdefault("ATI_TOKEN", "test")
+os.environ.setdefault("TELEPHONY", "mock")  # в проде по умолчанию звонков нет; тестам нужна имитация
+os.environ["TZ"] = "Europe/Moscow"  # как в main.py: «сегодня» у тестов и приложения одно и то же
+import time  # noqa: E402
+time.tzset()
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

@@ -77,6 +77,20 @@ def collect(ev, turns, buf):
             turns.append({"who": "Агент", "text": text})
 
 
+def explain(e):
+    """Причина сбоя голосового звонка — по-русски, без технических простыней."""
+    status = getattr(getattr(e, "response", None), "status_code", None) or getattr(e, "status_code", None)
+    if status in (401, 403):
+        return f"Yandex отклонил ключ ({status}) — проверьте YC_API_KEY и роль сервисного аккаунта"
+    if status == 429:
+        return "Yandex: превышен лимит запросов, попробуйте через минуту"
+    if status == 402:
+        return "Yandex: закончились деньги на балансе"
+    if isinstance(e, (OSError, asyncio.TimeoutError)):
+        return f"нет связи с Yandex ({type(e).__name__})"
+    return f"{type(e).__name__}: {str(e)[:200]}"
+
+
 def transcript(turns):
     return "\n".join(f"{x['who']}: {x['text']}" for x in turns)
 

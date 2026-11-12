@@ -9,8 +9,11 @@ services:
       COOKIE_SECURE: "1"
       DEMO_SEED: "0"
       LLM_PROXY_MODE: ""
+      TELEPHONY: ${TELEPHONY:-off}   # пока нет ВАТС — звонков нет (mock на проде не нужен: расшифровки выдуманные)
+      BACKUP_DIR: /backups
     volumes:
       - data:/data            # data.db и записи звонков (recordings/)
+      - backups:/backups:ro   # только отметки last_ok/last_error — показать владельцу, что бэкап жив
     expose: ["8010"]
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
@@ -31,28 +34,23 @@ services:
   backup:
     build: ./deploy/backup
     restart: unless-stopped
-    # только то, что нужно бэкапу — ключи LLM/ВАТС/АТИ сюда не попадают
+    # ключи хранилища — в отдельном backup.env (см. backup.env.example): приложению они не нужны и не видны.
+    # Ключи LLM/ВАТС/АТИ сюда не попадают.
+    env_file:
+      - path: backup.env
+        required: false
     environment:
       TZ: Europe/Moscow
       BACKUP_AT: ${BACKUP_AT:-03:30}
       KEEP_DAYS: ${KEEP_DAYS:-14}
-      BACKUP_BUCKET: ${BACKUP_BUCKET:-}
-      RCLONE_CONFIG_S3_TYPE: ${RCLONE_CONFIG_S3_TYPE:-}
-      RCLONE_CONFIG_S3_PROVIDER: ${RCLONE_CONFIG_S3_PROVIDER:-}
-      RCLONE_CONFIG_S3_ENDPOINT: ${RCLONE_CONFIG_S3_ENDPOINT:-}
-      RCLONE_CONFIG_S3_ACCESS_KEY_ID: ${RCLONE_CONFIG_S3_ACCESS_KEY_ID:-}
-      RCLONE_CONFIG_S3_SECRET_ACCESS_KEY: ${RCLONE_CONFIG_S3_SECRET_ACCESS_KEY:-}
-      RCLONE_CONFIG_S3_SERVER_SIDE_ENCRYPTION: ${RCLONE_CONFIG_S3_SERVER_SIDE_ENCRYPTION:-}
     security_opt: ["no-new-privileges:true"]
     volumes:
       - data:/data
       - backups:/backups
 
-  # Голосовой бот (ТЗ 2.2) — отдельный сервис, подключим после спайка с ВАТС:
-  # voice:
-  #   build: ./voice
-  #   restart: unless-stopped
-  #   env_file: .env
+  # Голос (ТЗ 2.2): релей Yandex Realtime уже внутри app (server/voice.py, тестовый звонок из браузера).
+  # После доступа к ВАТС SIP-адаптер (регистрация сотрудника-бота, 8 кГц ⇄ 44,1 кГц) станет отдельным сервисом
+  # с тем же образом: `command: python sip_bot.py` — и будет звать voice.talk().
 
 volumes:
   data:

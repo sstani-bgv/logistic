@@ -1,4 +1,4 @@
-"""Адаптеры телефонии. TELEPHONY=mock (по умолчанию) | megafon.
+"""Адаптеры телефонии. TELEPHONY=megafon | mock (имитация для разработки) | пусто/off — звонков нет.
 
 Итог звонка приходит в main.apply_call_result() одним форматом:
   {"status": "talking"|"done"|"no_answer"|"busy"|"failed", "duration": сек, "recording_url": str,
@@ -11,14 +11,31 @@ import os
 import httpx
 
 FINAL = ("done", "no_answer", "busy", "failed")
+TRANSPORT = None  # тесты подменяют сеть (httpx.MockTransport)
 
 
 def provider_name():
-    return os.environ.get("TELEPHONY", "mock")
+    return (os.environ.get("TELEPHONY") or "off").strip().lower()
+
+
+class OffProvider:
+    """Телефония не подключена: звонки не ставятся, причина видна логисту и владельцу."""
+    ready, mode = False, "off"
+    why = "телефония не подключена (TELEPHONY=megafon в .env после доступа к ВАТС)"
+
+    def __init__(self, on_result):
+        self.on_result = on_result
+
+    async def start(self, call, context):
+        raise RuntimeError(self.why)
+
+
+MOCK_MARK = "[ИМИТАЦИЯ — TELEPHONY=mock, это не настоящий разговор]"
 
 
 class MockProvider:
-    """Локальная имитация: через MOCK_CALL_SECONDS «дозвонились» и получили расшифровку."""
+    """Локальная имитация: через MOCK_CALL_SECONDS «дозвонились» и получили расшифровку (помеченную как имитация)."""
+    ready, mode, why = True, "mock", ""
 
     def __init__(self, on_result):
         self.on_result = on_result
@@ -32,7 +49,7 @@ class MockProvider:
             if outcome != "done":
                 await self.on_result(call["id"], {"status": outcome, "duration": 0})
                 return
-            transcript = ("Агент: Добрый день! Звоню по вашему грузу на АТИ, "
+            transcript = (f"{MOCK_MARK}\nАгент: Добрый день! Звоню по вашему грузу на АТИ, "
                           f"{context.get('route', 'по маршруту из объявления')}. Он ещё актуален?\n"
                           "Заказчик: Да, актуален. Грузим завтра с девяти.\n"
                           "Агент: Подскажите ставку и форму оплаты?\n"
@@ -50,17 +67,20 @@ class MegafonProvider:
     ПРОВЕРИТЬ В СПАЙКЕ: точный адрес и формат API конкретной ВАТС клиента, как звонок попадает в голосовой бот
     (сотрудник-бот с SIP-аккаунтом, который регистрирует наш voice-сервис) и поля вебхука.
     """
+    mode = "megafon"
 
     def __init__(self, on_result):
         self.on_result = on_result
         self.url = os.environ.get("MEGAFON_API_URL", "")  # https://<vats>.megapbx.ru/sys/crm_api.wcgp
         self.token = os.environ.get("MEGAFON_API_KEY", "")
         self.user = os.environ.get("MEGAFON_BOT_USER", "")  # логин сотрудника-бота в ВАТС
+        self.ready = bool(self.url and self.token and self.user)
+        self.why = "" if self.ready else "ВАТС МегаФон не настроена: MEGAFON_API_URL, MEGAFON_API_KEY, MEGAFON_BOT_USER"
 
     async def start(self, call, context):
-        if not (self.url and self.token and self.user):
-            raise RuntimeError("ВАТС МегаФон не настроена: MEGAFON_API_URL, MEGAFON_API_KEY, MEGAFON_BOT_USER")
-        async with httpx.AsyncClient(timeout=20) as c:
+        if not self.ready:
+            raise RuntimeError(self.why)
+        async with httpx.AsyncClient(timeout=20, transport=TRANSPORT) as c:
             r = await c.post(self.url, data={"cmd": "makeCall", "token": self.token, "user": self.user,
                                              "phone": call["phone"].lstrip("+")})
         if r.status_code >= 400:
@@ -95,4 +115,6 @@ def make(on_result):
         return MegafonProvider(on_result)
     if name == "mock":
         return MockProvider(on_result)
-    raise RuntimeError(f"Неизвестный TELEPHONY={name!r}: mock или megafon")
+    if name in ("off", "none", "0", ""):
+        return OffProvider(on_result)
+    raise RuntimeError(f"Неизвестный TELEPHONY={name!r}: megafon, mock или off")

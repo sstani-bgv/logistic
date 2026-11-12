@@ -3,6 +3,9 @@
 # S3 (Yandex Object Storage и др.) — через переменные RCLONE_CONFIG_S3_* и BACKUP_BUCKET; без них — только локально.
 set -euo pipefail
 DATA=${DATA:-/data}; OUT=${OUT:-/backups}; KEEP_DAYS=${KEEP_DAYS:-14}
+mkdir -p "$OUT"
+# Отметки для приложения (том /backups смонтирован в app только на чтение): last_ok — время удачного бэкапа, last_error — текст ошибки
+trap 'echo "$(date "+%F %T") ошибка бэкапа (строка $LINENO)" > "$OUT/last_error"' ERR
 ts=$(date +%F_%H%M)
 mkdir -p "$OUT/db"
 snap="$OUT/db/data-$ts.db"
@@ -20,6 +23,11 @@ if [ -n "${BACKUP_BUCKET:-}" ] && [ -n "${RCLONE_CONFIG_S3_TYPE:-}" ]; then
   [ -d "$DATA/recordings" ] && rclone copy "$DATA/recordings" "s3:$BACKUP_BUCKET/recordings/" --max-age "${KEEP_DAYS}d" --s3-no-check-bucket
   rclone delete "s3:$BACKUP_BUCKET/recordings/" --min-age "${KEEP_DAYS}d" --s3-no-check-bucket || true
   echo "$(date '+%F %T') выгружено в s3:$BACKUP_BUCKET"
-else
-  echo "ВНИМАНИЕ: внешнее хранилище не настроено (BACKUP_BUCKET, RCLONE_CONFIG_S3_*) — бэкап только на этом сервере" >&2
+fi
+date +%s > "$OUT/last_ok"
+rm -f "$OUT/last_error"
+if [ -z "${BACKUP_BUCKET:-}" ] || [ -z "${RCLONE_CONFIG_S3_TYPE:-}" ]; then
+  msg="внешнее хранилище не настроено (BACKUP_BUCKET, RCLONE_CONFIG_S3_*) — бэкап только на этом сервере"
+  echo "ВНИМАНИЕ: $msg" >&2
+  echo "$msg" > "$OUT/last_error"
 fi

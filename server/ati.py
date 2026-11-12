@@ -4,7 +4,8 @@ import httpx
 
 TOKEN = os.environ.get("ATI_TOKEN", "")  # без токена модуль импортируется (тесты, мок), запросы вернут 401
 # ATI требует User-Agent интегратора: ati_integrator_<ID приложения клиента>
-CLIENT_ID = os.environ.get("ATI_CLIENT_ID") or "5464422"
+CLIENT_ID_SET = bool(os.environ.get("ATI_CLIENT_ID"))
+CLIENT_ID = os.environ.get("ATI_CLIENT_ID") or "5464422"  # без своего ID — ID интегратора (видно в health и check-ati)
 HEAD = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/json",
         "User-Agent": f"ati_integrator_{CLIENT_ID}"}
 client = httpx.AsyncClient(headers=HEAD, timeout=30, follow_redirects=True)

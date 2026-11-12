@@ -46,9 +46,14 @@ def test_one_step_per_dialog(monkeypatch):
     did = dialog(truck(), load_raw(), status="waiting")
     runs = []
 
+    live = []
+
     async def think(*a):
         runs.append(1)
+        live.append(1)
+        assert len(live) == 1  # параллельно не думает
         await asyncio.sleep(0.05)
+        live.pop()
         return REPLY
     monkeypatch.setattr(main.agent, "negotiate", think)
     set_kv(send_enabled=False)
@@ -57,7 +62,7 @@ def test_one_step_per_dialog(monkeypatch):
     async def both():
         await asyncio.gather(main.agent_step(d), main.agent_step(d))
     asyncio.run(both())
-    assert len(runs) == 1  # второй шаг параллельно = два ответа заказчику
+    assert len(runs) == 2  # второй вызов не теряется и не идёт параллельно: шаг повторяется после первого
 
 
 def test_draft_when_sending_off(monkeypatch, make_client):

@@ -4,6 +4,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 
@@ -67,8 +68,10 @@ def migrate():
     dcols = {r[1] for r in DB.execute("pragma table_info(dialogs)")}
     if "draft" not in dcols:  # ответ агента при выключенной отправке
         DB.execute("alter table dialogs add column draft text")
-    if "fails" not in dcols:  # подряд неудачные шаги агента — для повтора первого сообщения
+    if "fails" not in dcols:  # подряд неудачные шаги агента — для повтора
         DB.execute("alter table dialogs add column fails int default 0")
+    if "by_agent" not in dcols:  # диалог начал агент сам (в дневной лимит автостарта), а не логист
+        DB.execute("alter table dialogs add column by_agent int default 0")
 
 
 migrate()
@@ -79,7 +82,7 @@ DEFAULTS = {"vat": 22, "min_rate_km": 55, "threshold": 55, "scan_minutes": 5, "p
             "auto_start": False, "auto_score": 85, "auto_per_cycle": 1, "auto_daily": 3,  # старт у клиента — осторожно, потом поднять
             "default_goal": "Узнать то, чего нет в объявлении и что нужно для решения: актуален ли груз; если ставка «запрос» — "
                             "какую ставку и форму оплаты дают; точный адрес и время погрузки; особые требования (доверенность, "
-                            "ремни, растентовка). Первое сообщение — 1–2 коротких вопроса, без торга. Если ставка ниже 55 ₽/км "
+                            "ремни, растентовка). Первое сообщение — 1–2 коротких вопроса, без торга. Если ставка ниже {min_rate_km} ₽/км "
                             "чистыми — потом вежливо попробовать поднять.",
             # готовые сценарии — кнопки в окне «Поручить агенту»; правит владелец в Настройках
             "goal_presets": ["Узнать, актуален ли груз и можно ли поднять ставку до 60 ₽/км",
@@ -115,6 +118,31 @@ if os.environ.get("DEMO_SEED") == "1" and not q("select id from trucks limit 1")
                     "busy" if dd else "free"))
 
 ME = {}
+# Состояние внешних систем для интерфейса (ATI, модель, телефония): ok=None — ещё не проверяли
+HEALTH = {k: {"ok": None, "err": "", "ts": 0.0} for k in ("ati", "llm", "phone")}
+
+
+def mark(part, ok, err=""):
+    """Обновить состояние части системы; ошибку пишем в ленту только при смене текста (без спама каждый цикл)."""
+    old = HEALTH[part]
+    err = str(err)[:300]
+    if not ok and (old["ok"] is not False or old["err"] != err):
+        log(f"{ {'ati': 'АТИ', 'llm': 'Модель', 'phone': 'Телефония'}[part] }: {err}", "error")
+    HEALTH[part] = {"ok": ok, "err": "" if ok else err, "ts": time.time()}
+
+
+def ati_err(e):
+    """Понятный текст ошибки АТИ (401/403 — токен)."""
+    if isinstance(e, httpx.HTTPStatusError):
+        code = e.response.status_code
+        if code in (401, 403):
+            return f"АТИ отклонила токен ({code}) — проверьте ATI_TOKEN и тариф"
+        return f"АТИ ответила {code}"
+    if isinstance(e, httpx.TransportError):
+        return f"АТИ недоступна: {type(e).__name__}"
+    return f"{type(e).__name__}: {e}"
+
+
 TASKS = set()  # держим ссылки, иначе asyncio может собрать задачу до завершения
 LOG = []  # лента событий для интерфейса
 
@@ -151,6 +179,7 @@ async def scan_truck(t):
                         json.dumps(reasons, ensure_ascii=False), json.dumps(m), time.time(), time.time()))
         await asyncio.sleep(1.5)  # темп как у человека
     DB.execute("insert into scans values(?,?,?,?)", (time.time(), t["id"], seen, total))
+    mark("ati", True)
     log(f"{t['name']}: просмотрено {seen} свежих грузов из {total} в радиусе {t['radius']} км от {t['city_name']}")
 
 
@@ -159,7 +188,11 @@ def rescore():
     for l in q("select id, truck_id, raw from loads"):
         t = trucks.get(l["truck_id"])
         if t:
-            s, v, r, m = score(json.loads(l["raw"]), t, rules, st)
+            try:
+                s, v, r, m = score(json.loads(l["raw"]), t, rules, st)
+            except Exception as e:  # один странный груз не должен ронять сохранение настроек/правила
+                log(f"Груз {l['id']} не пересчитан: {type(e).__name__}: {e}", "error")
+                continue
             DB.execute("update loads set score=?, verdict=?, reasons=?, metrics=? where id=?",
                        (s, v, json.dumps(r, ensure_ascii=False), json.dumps(m), l["id"]))
 
@@ -174,7 +207,7 @@ async def monitor():
                 try:
                     await scan_truck(t)
                 except Exception as e:
-                    log(f"Ошибка поиска ({t['name']}): {e}", "error")
+                    mark("ati", False, f"поиск грузов: {ati_err(e)}")
             await auto_start()
         except Exception as e:  # ошибка одного прохода не должна останавливать поиск навсегда
             log(f"Ошибка мониторинга: {e}", "error")
@@ -195,48 +228,106 @@ def dialog_ctx(d):
 def spawn(coro):
     t = asyncio.create_task(coro)
     TASKS.add(t)
-    t.add_done_callback(TASKS.discard)
+    t.add_done_callback(_task_done)
+
+
+def _task_done(t):
+    TASKS.discard(t)
+    if not t.cancelled() and t.exception():
+        log(f"Фоновая задача упала: {type(t.exception()).__name__}: {t.exception()}", "error")
 
 
 STEPPING = set()  # диалоги, по которым агент сейчас думает: второй шаг параллельно = два ответа заказчику
+AGAIN = set()  # пока думал, пришло новое (ответ, итог звонка) — ещё один шаг сразу после текущего
+FAIL_SQL = ("update dialogs set status=case when status='writing' then 'waiting' else status end, summary=?, "
+            "fails=coalesce(fails,0)+1 where id=? and status in ('writing','waiting','ready')")  # «Готово» ошибкой не понижаем
 
 
 async def agent_step(d):
     if d["id"] in STEPPING:
+        AGAIN.add(d["id"])
         return
     STEPPING.add(d["id"])
     try:
-        await _agent_step(d)
-    except Exception as e:  # любая ошибка шага — в summary, чтобы логист её видел (закрытый диалог не трогаем)
-        DB.execute("update dialogs set status='waiting', summary=?, fails=coalesce(fails,0)+1 where id=? "
-                   "and status in ('writing','waiting','ready')", (f"Ошибка: {type(e).__name__}: {e}", d["id"]))
-        log(f"Ошибка агента в диалоге #{d['id']}: {e}", "error")
+        while True:
+            AGAIN.discard(d["id"])
+            try:
+                await _agent_step(d)
+            except Exception as e:  # любая ошибка шага — в summary, чтобы логист её видел (закрытый диалог не трогаем)
+                DB.execute(FAIL_SQL, (f"Ошибка: {type(e).__name__}: {e}", d["id"]))
+                log(f"Ошибка агента в диалоге #{d['id']}: {e}", "error")
+            if d["id"] not in AGAIN:
+                break
+            d = q("select * from dialogs where id=?", d["id"])[0]
     finally:
         STEPPING.discard(d["id"])
+        AGAIN.discard(d["id"])
+
+
+def prompt_inputs(d):
+    """Всё, что агент знает о диалоге, — одинаково для чата, звонка и тестового звонка."""
+    load, m, t = dialog_ctx(d)
+    chat = [{"mine": bool(x["mine"]), "text": f"{agent.CALL_MARK} {x['text']}" if x.get("kind") == "call" else x["text"]}
+            for x in q("select * from messages where dialog_id=? order by ts", d["id"])]
+    notes = "; ".join(r["text"] for r in q("select text from rules where active=1"))
+    goal = str(d["goal"] or "").replace("{min_rate_km}", str(settings()["min_rate_km"]))
+    return load, m, t, goal, chat, notes
+
+
+def instructions_for_call(d):
+    """Инструкции голосу. Знания компании по телефону не передаём: собеседник не должен вытянуть их вслух."""
+    load, m, t, goal, chat, _ = prompt_inputs(d)
+    return agent.call_instructions(load, m, t, goal, chat, "", ME.get("name", "логист"))
+
+
+def safe_instructions(d):
+    try:
+        return instructions_for_call(d)
+    except Exception as e:  # нет машины/груза — звоним всё равно, голос возьмёт цель из ctx
+        log(f"Инструкции звонка по диалогу #{d['id']} не собрались: {type(e).__name__}: {e}", "error")
+        return None
+
+
+# Ответ, который агент не должен отправлять сам: обещание от имени компании, внутренние правила, простыня
+RISKY = re.compile(r"(?i)\b(подтверждаем|подтверждаю|берём|берем|забираем|согласны|согласен|договорились|бронируем|"
+                   r"ставим машину|выезжаем)\b")
+
+
+def risky_reply(reply, notes):
+    if len(reply) > 600 or RISKY.search(reply):
+        return True
+    low = reply.lower()
+    return any(len(frag) > 20 and frag in low for frag in (x.strip().lower() for x in notes.split(";")))
 
 
 async def _agent_step(d):
-    load, m, t = dialog_ctx(d)
-    chat = [{"mine": bool(x["mine"]), "text": f"[РАСШИФРОВКА ЗВОНКА] {x['text']}" if x.get("kind") == "call" else x["text"]}
-            for x in q("select * from messages where dialog_id=? order by ts", d["id"])]
-    notes = "; ".join(r["text"] for r in q("select text from rules where active=1"))
+    load, m, t, goal, chat, notes = prompt_inputs(d)
+    prev = (q("select status from dialogs where id=?", d["id"]) or [{"status": "waiting"}])[0]["status"]
     if not DB.execute("update dialogs set status='writing', updated=? where id=? and status in ('writing','waiting','ready')",
                       (time.time(), d["id"])).rowcount:
         return  # логист уже закрыл диалог («Берём»/«Отказ») — не воскрешаем
     try:
-        res = await agent.negotiate(load, m, t, d["goal"], chat, notes, ME.get("name", "логист"))
-    except Exception as e:
-        DB.execute("update dialogs set status='waiting', summary=?, fails=coalesce(fails,0)+1 where id=? and status='writing'",
-                   (f"Ошибка агента: {e}", d["id"]))
-        log(f"Агент не ответил по #{load.get('loadNumber')}: {e}", "error")
+        res = await agent.negotiate(load, m, t, goal, chat, notes, ME.get("name", "логист"))
+    except Exception as e:  # сбой модели: возвращаем прежний статус («Готово» не понижаем), причину — в summary
+        DB.execute("update dialogs set status=?, summary=?, fails=coalesce(fails,0)+1 where id=? and status='writing'",
+                   ("ready" if prev == "ready" else "waiting", f"Ошибка агента: {e}", d["id"]))
+        mark("llm", False, e)
         return
+    mark("llm", True)
     now = q("select status from dialogs where id=?", d["id"])[0]["status"]
     if now in ("taken", "declined"):  # пока агент думал, логист сам закрыл диалог — его решение главнее
         DB.execute("update dialogs set summary=?, facts=?, updated=? where id=?",
                    (res["summary"], json.dumps(res["facts"], ensure_ascii=False), time.time(), d["id"]))
         return
-    if res["reply"] and d["chat_id"] and settings()["send_enabled"]:
-        msg = await ati.send(d["chat_id"], res["reply"])
+    hold = bool(res["reply"]) and risky_reply(res["reply"], notes)
+    if hold:
+        log(f"Ответ агента по #{load.get('loadNumber')} похож на обещание — оставили черновиком для логиста", "agent")
+    if res["reply"] and d["chat_id"] and settings()["send_enabled"] and not hold:
+        try:
+            msg = await ati.send(d["chat_id"], res["reply"])
+        except Exception as e:
+            mark("ati", False, f"отправка сообщения: {ati_err(e)}")
+            raise
         DB.execute("insert or ignore into messages(id,dialog_id,mine,text,ts) values(?,?,?,?,?)", (msg["id"], d["id"], 1, res["reply"], msg["ts"]))
         DB.execute("update dialogs set last_ts=max(last_ts,?), draft=null where id=?", (msg["ts"], d["id"]))
         log(f"Агент → #{load.get('loadNumber')}: {res['reply']}", "agent")
@@ -269,7 +360,19 @@ def is_mine(user):
     return bool(me) and str(user or "").split(".")[0] == me
 
 
-FIRST_RETRY_SEC, FIRST_RETRIES = 300, 3  # первое сообщение не ушло (модель/АТИ) — повторяем, а не бросаем диалог
+FIRST_RETRY_SEC, FIRST_RETRIES = 300, 3  # шаг не удался (модель/АТИ) — повторяем, а не бросаем диалог
+
+
+async def retry_failed(now=None):
+    """Шаг агента не удался (модель/АТИ): первое сообщение не ушло или ответ заказчика остался без ответа — повторяем."""
+    rows = q(f"select d.* from dialogs d where d.status='waiting' and d.auto=1 and d.chat_id is not null"
+             f" and coalesce(d.fails,0) between 1 and ? and d.updated<? and (not exists(select 1 from messages m where m.dialog_id=d.id)"
+             f" or (select m.mine from messages m where m.dialog_id=d.id order by {calls.TS_SEC} desc limit 1)=0)",
+             FIRST_RETRIES, (now or time.time()) - FIRST_RETRY_SEC)
+    for d in rows:
+        log(f"Повторяем шаг агента в диалоге #{d['id']} после сбоя", "agent")
+        await agent_step(d)
+    return [d["id"] for d in rows]
 
 
 async def poll_dialogs():
@@ -277,12 +380,12 @@ async def poll_dialogs():
         if not ME:
             try:
                 ME.update(await ati.me())
-            except Exception:
-                pass
-        for d in q("select d.* from dialogs d where d.status='waiting' and d.auto=1 and d.chat_id is not null and coalesce(d.fails,0) between 1 and ?"
-                   " and d.updated<? and not exists(select 1 from messages m where m.dialog_id=d.id)", FIRST_RETRIES, time.time() - FIRST_RETRY_SEC):
-            log(f"Повторяем первое сообщение в диалоге #{d['id']}", "agent")
-            await agent_step(d)
+                mark("ati", True)
+            except Exception as e:
+                mark("ati", False, f"аккаунт: {ati_err(e)}")
+                await asyncio.sleep(60)
+                continue  # без своего ati_id не отличить наши сообщения от ответов заказчика — переписку не читаем
+        await retry_failed()
         for d in q("select * from dialogs where status in ('waiting','ready') and chat_id is not null"):
             try:
                 new = [x for x in await ati.history(d["chat_id"], d["last_ts"] or None)
@@ -301,14 +404,15 @@ async def poll_dialogs():
                     if fresh["auto"] and fresh["status"] == "waiting":
                         await agent_step(fresh)
             except Exception as e:
-                log(f"Ошибка чтения диалога #{d['id']}: {e}", "error")
+                mark("ati", False, f"чтение переписки: {ati_err(e)}")
         await asyncio.sleep(15)
 
 
 # ---------- звонки ----------
 RECORDINGS = DATA_DIR / "recordings"
 CALL_RUB_PER_MIN = float(os.environ.get("CALL_RUB_PER_MIN", "3"))  # связь ВАТС
-SPEECH_RUB_PER_MIN = float(os.environ.get("SPEECH_RUB_PER_MIN", "0"))  # STT+TTS, уточнить по тарифу Yandex
+# голос Yandex Realtime: та же оценка, что у тестовых звонков (VOICE_RUB_SEC × 60), пока не задано своё
+SPEECH_RUB_PER_MIN = float(os.environ.get("SPEECH_RUB_PER_MIN") or voice.cfg()["rub_sec"] * 60)
 WEBHOOK_SECRET = os.environ.get("TELEPHONY_WEBHOOK_SECRET", "")
 if 0 < len(WEBHOOK_SECRET) < 32:
     log("TELEPHONY_WEBHOOK_SECRET короче 32 символов — вебхук выключен (openssl rand -hex 24)", "error")
@@ -322,7 +426,11 @@ async def start_call(d, manual=False):
     l = q("select raw from loads where id=?", d["load_id"])
     raw = json.loads(l[0]["raw"]) if l else {}
     phone = calls.phone_of(raw)  # телефоны приходят в выдаче АТИ: firm.contacts[].phones[]
+    if not PHONE.ready:
+        return None, PHONE.why
     why = calls.blocked_reason(DB, settings(), phone, d["id"], manual=manual)
+    if not why and len(q("select 1 from calls where status in (%s)" % ",".join("?" * len(calls.ACTIVE)), *calls.ACTIVE)) >= CALL_LINES:
+        why = "все линии заняты — позвоним следующим проходом"
     if why:
         return None, why
     u = auth.current() if manual else None
@@ -333,17 +441,20 @@ async def start_call(d, manual=False):
     ctx = {"goal": d["goal"], "route": f"{raw.get('loading', {}).get('location', {}).get('city', '')} — "
                                       f"{raw.get('unloading', {}).get('location', {}).get('city', '')}",
            "load": raw, "facts": json.loads(d.get("facts") or "{}"),  # для голосового бота: та же цель и контекст
-           "chat": [x["text"] for x in q("select text from messages where dialog_id=? order by ts", d["id"])][-10:]}
+           "chat": [x["text"] for x in q("select text from messages where dialog_id=? order by ts", d["id"])][-10:],
+           "instructions": safe_instructions(d)}
     try:
         pid = await PHONE.start(call, ctx)
-        if not pid:
-            raise RuntimeError("телефония не вернула id звонка")
+        if not pid:  # ВАТС приняла команду, но id не вернула — попытку считаем (иначе перезвон каждые 30 минут)
+            pid = f"unknown-{cid}"
+            log(f"Телефония не вернула id звонка #{cid} — итог может не прийти", "error")
         DB.execute("update calls set provider_id=?, status=case when status='queued' then 'ringing' else status end,"
                    " started=? where id=?", (pid, time.time(), cid))
     except Exception as e:  # не дозвонились до телефонии — попытка не считается (provider_id пустой)
         DB.execute("update calls set status='failed', error=? where id=?", (str(e)[:500], cid))
-        log(f"Звонок по диалогу #{d['id']} не начался: {e}", "error")
+        mark("phone", False, f"звонок не начался: {e}")
         return q("select * from calls where id=?", cid)[0], f"ошибка телефонии: {e}"
+    mark("phone", True)
     log(f"{'Звоним' if not manual else by + ': звоним'} {phone} по диалогу #{d['id']}", "agent")
     return q("select * from calls where id=?", cid)[0], None
 
@@ -470,10 +581,12 @@ async def fetch_recording(cid, url):
         DB.execute("update calls set recording_url=? where id=?", (f"/api/calls/{cid}/recording", cid))
     except Exception as e:
         f.with_suffix(".part").unlink(missing_ok=True)
+        DB.execute("update calls set error=? where id=?", (f"запись не скачалась: {e}"[:300], cid))
         log(f"Запись звонка #{cid} не скачалась: {e}", "error")
 
 
 PHONE = telephony.make(apply_call_result)
+CALL_LINES = max(1, int(os.environ.get("CALL_LINES", "1")))  # одновременных звонков (линий бота в ВАТС)
 llm.USAGE_HOOK = lambda model, pin, pout, rub: DB.execute("insert into llm_usage values(?,?,?,?,?)",
                                                           (time.time(), model, pin, pout, rub))
 
@@ -512,6 +625,8 @@ async def call_tick():
     """Один проход планировщика: закрыть зависшие, позвонить тем, кто молчит. -> [(dialog_id, call|None, причина)]."""
     await reap_stale_calls()
     st, done = settings(), []
+    if st["call_enabled"] and not PHONE.ready:
+        return done  # причину показывает health(): «звонки включены, но телефония не подключена»
     if st["call_enabled"] and calls.in_window(st["call_hours"]):
         for d in calls.due_dialogs(DB, st):
             call, why = await start_call(d)
@@ -525,8 +640,9 @@ async def call_tick():
 async def lifespan(app):
     try:
         ME.update(await ati.me())
+        mark("ati", True)
     except Exception as e:
-        log(f"АТИ API недоступен: {e}", "error")
+        mark("ati", False, f"аккаунт: {ati_err(e)}")
     for d in q("select * from dialogs where status='writing'"):  # дожать прерванные
         spawn(agent_step(d))
     await reap_stale_calls()
@@ -648,7 +764,65 @@ async def stats():
             "ready": q("select count(*) n from dialogs where status='ready'")[0]["n"],
             "rules": q("select count(*) n from rules where active=1")[0]["n"],
             "hours_saved": round(scans["s"] * 25 / 3600, 1),  # ~25 сек логиста на просмотр одного груза
-            "me": ME, "log": LOG[:40]}
+            "me": ME, "log": LOG[:40], "health": health()}
+
+
+BACKUP_DIR = os.environ.get("BACKUP_DIR", "")  # том бэкапов (только чтение): backup.sh пишет туда last_ok / last_error
+
+
+def backup_state(now=None):
+    if not BACKUP_DIR:
+        return None
+    now = now or time.time()
+    d = Path(BACKUP_DIR)
+    try:
+        ok = float((d / "last_ok").read_text().strip())
+    except (OSError, ValueError):
+        ok = 0.0
+    err = (d / "last_error").read_text().strip()[:200] if (d / "last_error").is_file() else ""
+    err_ts = (d / "last_error").stat().st_mtime if err else 0
+    if err and err_ts > ok:
+        return f"бэкап не удался: {err}"
+    if not ok:
+        return "бэкапов ещё не было — проверьте сервис backup"
+    if now - ok > 26 * 3600:
+        return f"последний бэкап {int((now - ok) / 3600)} ч назад"
+    return None
+
+
+def health(now=None):
+    """Что сломано или требует внимания — понятными словами, для плашки в интерфейсе."""
+    now = now or time.time()
+    st, out = settings(), []
+
+    def add(part, text, level="error"):
+        out.append({"part": part, "text": text, "level": level})
+    a = HEALTH["ati"]
+    if a["ok"] is False:
+        add("ati", a["err"])
+    trucks = q("select count(*) n from trucks where active=1")[0]["n"]
+    last = q("select max(ts) t from scans")[0]["t"] or 0
+    if trucks and last and now - last > 3 * max(60, int(st["scan_minutes"]) * 60) + 120 and a["ok"] is not False:
+        add("ati", f"поиск грузов не проходил {int((now - last) / 60)} мин")
+    if not os.environ.get("LLM_BASE_URL"):
+        add("llm", "модель не настроена: LLM_BASE_URL, LLM_MODEL, LLM_API_KEY в .env")
+    elif HEALTH["llm"]["ok"] is False:
+        add("llm", f"модель: {HEALTH['llm']['err']}")
+    if PHONE.mode == "mock":
+        add("phone", "телефония в режиме имитации (TELEPHONY=mock): звонки и расшифровки не настоящие", "warn")
+    if st["call_enabled"] and not PHONE.ready:
+        add("phone", f"звонки включены, но {PHONE.why}")
+    elif HEALTH["phone"]["ok"] is False:
+        add("phone", HEALTH["phone"]["err"])
+    if PHONE.mode == "megafon" and not WEBHOOK_SECRET:
+        add("phone", "вебхук ВАТС выключен: TELEPHONY_WEBHOOK_SECRET не задан или короче 32 символов — итоги звонков не придут")
+    if not ati.CLIENT_ID_SET:
+        add("ati", "ATI_CLIENT_ID не задан — запросы идут с ID интегратора", "warn")
+    if b := backup_state(now):
+        add("backup", b)
+    if st["auto_start"] and not st["send_enabled"]:
+        add("agent", "агент сам берёт грузы, но отправка выключена — только черновики", "info")
+    return {"problems": out, "ati_ok": a["ok"], "ati_last_scan": last, "telephony": PHONE.mode}
 
 
 @app.get("/api/loads")
@@ -696,7 +870,7 @@ async def add_rule_from_text(text, load=None, metrics=None, lid=None):
 
 
 class Goal(BaseModel):
-    goal: str | None = None
+    goal: str | None = Field(None, max_length=1500)
 
 
 @app.post("/api/loads/{lid}/agent")
@@ -725,15 +899,17 @@ async def start_dialog(l, goal, by_agent=False):
         if not calls.phone_of(raw):
             raise ValueError(f"Чат с заказчиком не открылся ({e}), телефона нет") from e
         # чата нет, но есть телефон — диалог «только звонок», call_loop позвонит без ожидания ответа в чате
-        cur = DB.execute("insert into dialogs(load_id,chat_id,goal,status,summary,created,updated) values(?,?,?,?,?,?,?)",
-                         (l["id"], None, goal, "waiting", "Чат не открылся — позвоним по телефону", time.time(), time.time()))
+        mark("ati", False, f"чат не открылся: {ati_err(e)}")
+        cur = DB.execute("insert into dialogs(load_id,chat_id,goal,status,summary,created,updated,by_agent) values(?,?,?,?,?,?,?,?)",
+                         (l["id"], None, goal, "waiting", f"Чат не открылся ({ati_err(e)}) — позвоним по телефону",
+                          time.time(), time.time(), int(by_agent)))
         DB.execute("update loads set status='dialog' where id=?", (l["id"],))
         log(f"Чат с {firm.get('name')} не открылся ({e}) — поставили звонок", "agent")
         return q("select * from dialogs where id=?", cur.lastrowid)[0]
-    cur = DB.execute("insert into dialogs(load_id,chat_id,goal,status,summary,created,updated) values(?,?,?,?,?,?,?)",
+    cur = DB.execute("insert into dialogs(load_id,chat_id,goal,status,summary,created,updated,by_agent) values(?,?,?,?,?,?,?,?)",
                      (l["id"], chat_id, goal, "writing",
                       "Агент сам выбрал груз и готовит вопросы" if by_agent else "Агент готовит первое сообщение",
-                      time.time(), time.time()))
+                      time.time(), time.time(), int(by_agent)))
     DB.execute("update loads set status='dialog' where id=?", (l["id"],))
     d = q("select * from dialogs where id=?", cur.lastrowid)[0]
     spawn(agent_step(d))
@@ -760,7 +936,7 @@ async def _auto_start():
     if not (st["auto_start"] and st["send_enabled"]):
         return
     day = datetime.combine(date.today(), datetime.min.time()).timestamp()
-    left = st["auto_daily"] - q("select count(*) n from dialogs where created>=?", day)[0]["n"]
+    left = st["auto_daily"] - q("select count(*) n from dialogs where created>=? and by_agent=1", day)[0]["n"]
     busy_firms = {(json.loads(r["raw"]).get("firm") or {}).get("id") for r in
                   q("select l.raw from dialogs d join loads l on l.id=d.load_id where d.status in ('writing','waiting','ready')")}
     started = 0
@@ -789,7 +965,7 @@ async def agent_run():
     if not st["auto_start"]:
         return {"started": 0, "reason": "«Агент сам берёт лучшие грузы» выключено в настройках"}
     day = datetime.combine(date.today(), datetime.min.time()).timestamp()
-    if q("select count(*) n from dialogs where created>=?", day)[0]["n"] >= st["auto_daily"]:
+    if q("select count(*) n from dialogs where created>=? and by_agent=1", day)[0]["n"] >= st["auto_daily"]:
         return {"started": 0, "reason": f"Дневной лимит новых диалогов ({st['auto_daily']}) исчерпан"}
     before = q("select count(*) n from dialogs")[0]["n"]
     await auto_start()
@@ -822,7 +998,11 @@ async def send_manual(did: int, b: Text):
     d = d[0]
     if not d["chat_id"]:
         raise HTTPException(400, "Чата с заказчиком нет — только звонок")
-    msg = await ati.send(d["chat_id"], b.text)
+    try:
+        msg = await ati.send(d["chat_id"], b.text)
+    except httpx.HTTPError as e:
+        mark("ati", False, f"отправка сообщения: {ati_err(e)}")
+        raise HTTPException(502, ati_err(e)) from e
     DB.execute("insert or ignore into messages(id,dialog_id,mine,text,ts) values(?,?,?,?,?)", (msg["id"], did, 1, b.text, msg["ts"]))
     DB.execute("update dialogs set last_ts=max(last_ts,?), updated=?, draft=null where id=?", (msg["ts"], time.time(), did))
     auth.record(DB, "message_send", did, b.text[:500])
@@ -860,23 +1040,25 @@ async def voice_test(ws: WebSocket, did: int):
     if not d:
         return await end("Диалог не найден.")
     spent = q("select coalesce(sum(cost),0) rub from voice_usage where ts>=?", calls.msk_day_start())[0]["rub"]
-    allow = min(c["call_sec"], int((c["rub_day"] - spent) / c["rub_sec"])) if c["rub_sec"] > 0 else c["call_sec"]
+    allow = (min(c["call_sec"], int((c["rub_day"] - spent) / c["rub_sec"] / (len(VOICE_LIVE) + 1)))  # остаток делим на идущие
+             if c["rub_sec"] > 0 else c["call_sec"])
     if allow < 30:
         return await end(f"Дневной лимит на тестовые звонки ({c['rub_day']:g} ₽) исчерпан.")
     if did in VOICE_LIVE or len(VOICE_LIVE) >= VOICE_MAX_LIVE:
         return await end("Сейчас уже идёт тестовый звонок — попробуйте через минуту.")
-    load, m, t = dialog_ctx(d[0])
-    chat = [{"mine": bool(x["mine"]), "text": x["text"]} for x in q("select * from messages where dialog_id=? order by ts", did)]
-    notes = "; ".join(r["text"] for r in q("select text from rules where active=1"))
-    instructions = agent.call_instructions(load, m, t, d[0]["goal"], chat, notes, ME.get("name", "логист"))
+    instructions = instructions_for_call(d[0])
 
     async def recv():
         try:
-            return json.loads(await ws.receive_text())
-        except WebSocketDisconnect:
+            msg = await ws.receive()
+        except Exception:
             return None
+        if msg.get("type") == "websocket.disconnect":
+            return None
+        try:
+            return json.loads(msg.get("text") or "")
         except ValueError:
-            return {}
+            return {}  # бинарный кадр или мусор — пропускаем, звонок не роняем
 
     async def send(ev):
         try:
@@ -885,18 +1067,21 @@ async def voice_test(ws: WebSocket, did: int):
             pass
 
     VOICE_LIVE.add(did)
-    reason, turns, secs = "error", [], 0.0
+    reason, turns, why, t0 = "error", [], "", time.monotonic()
     try:
-        reason, turns, secs = await voice.talk(recv, send, instructions, {**c, "call_sec": allow})
+        reason, turns, _ = await voice.talk(recv, send, instructions, {**c, "call_sec": allow})
     except Exception as e:
-        log(f"Тестовый звонок по диалогу #{did} не запустился: {type(e).__name__}: {e}", "error")
+        why = voice.explain(e)
+        log(f"Тестовый звонок по диалогу #{did}: {why}", "error")
     finally:
         VOICE_LIVE.discard(did)
+        secs = time.monotonic() - t0  # время считаем сами: даже если разговор оборвался исключением, он оплачен
         rub = round(secs * c["rub_sec"], 2)
         DB.execute("insert into voice_usage values(?,?,?,?,?,?)", (time.time(), did, secs, rub, u["login"], reason))
         auth.record(DB, "voice_test", did, f"{secs:.0f} с, {rub} ₽, {reason}")
     # расшифровку в переписку НЕ кладём: логист играл заказчика, это не слова настоящего заказчика
-    await end(VOICE_END.get(reason, "Звонок завершён."), transcript=voice.transcript(turns), seconds=round(secs), rub=rub)
+    text = f"Голосовой звонок не состоялся: {why}" if why else VOICE_END.get(reason, "Звонок завершён.")
+    await end(text, transcript=voice.transcript(turns), seconds=round(secs), rub=rub)
 
 
 DIALOG_STATUSES = ("writing", "waiting", "ready", "declined", "taken")
@@ -981,8 +1166,8 @@ async def patch_dialog(did: int, b: DStatus):
         raise HTTPException(404)
     truck = None
     if b.status:
-        if b.status not in DIALOG_STATUSES:
-            raise HTTPException(400, f"Статус должен быть одним из {DIALOG_STATUSES}")
+        if b.status not in DIALOG_STATUSES or b.status == "writing":
+            raise HTTPException(400, f"Статус должен быть одним из {[s for s in DIALOG_STATUSES if s != 'writing']}")
         DB.execute("update dialogs set status=?, updated=? where id=?", (b.status, time.time(), did))
         lid = d[0]["load_id"]
         DB.execute("update loads set status=? where id=?", ({"taken": "taken", "declined": "declined"}.get(b.status, "dialog"), lid))
@@ -1132,7 +1317,14 @@ async def set_truck_status(tid: int, b: TruckStatus):
 
 @app.post("/api/trucks/{tid}/scan")
 async def scan_now(tid: int):
-    await scan_truck(q("select * from trucks where id=?", tid)[0])
+    t = q("select * from trucks where id=?", tid)
+    if not t:
+        raise HTTPException(404)
+    try:
+        await scan_truck(t[0])
+    except httpx.HTTPError as e:
+        mark("ati", False, f"поиск грузов: {ati_err(e)}")
+        raise HTTPException(502, ati_err(e)) from e
     return {"ok": True}
 
 
@@ -1210,8 +1402,8 @@ async def put_settings(b: dict):
         if len(g) > 20 or any(len(x) > 1000 for x in g):
             raise HTTPException(400, "Сценариев не больше 20, каждый до 1000 символов")
         b["goal_presets"] = g
-    if "default_goal" in b and not str(b["default_goal"] or "").strip():
-        raise HTTPException(400, "Сценарий по умолчанию не может быть пустым")
+    if "default_goal" in b and not (isinstance(b["default_goal"], str) and 0 < len(b["default_goal"].strip()) <= 1500):
+        raise HTTPException(400, "Сценарий по умолчанию: от 1 до 1500 символов")
     for k, v in b.items():
         if k in DEFAULTS:
             DB.execute("insert into kv values(?,?) on conflict(k) do update set v=excluded.v", (k, json.dumps(v)))

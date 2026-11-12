@@ -41,12 +41,12 @@ export default function DialogsPage() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Переговоры</h1>
-          <p className="text-sm text-muted-foreground">Агент сам берёт лучшие грузы, переписывается с заказчиками в мессенджере АТИ и узнаёт то, чего нет в объявлении.</p>
+          <p className="text-sm text-muted-foreground">Агент переписывается с заказчиками в мессенджере АТИ и узнаёт то, чего нет в объявлении. Если в чате молчат — звонит (когда звонки включены). Ничего не подтверждает: решение за вами.</p>
         </div>
         <Button onClick={run} disabled={running}>{running ? <Loader2 className="animate-spin" /> : <Bot />}Взять лучшие грузы сейчас</Button>
       </div>
       {offline && <div role="status" className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">Нет связи с сервером — показаны последние полученные данные.</div>}
-      {data && data.length === 0 && <div className="rounded-xl border border-dashed bg-card p-10 text-center text-sm text-muted-foreground">Переговоров пока нет. Агент возьмёт лучшие грузы после следующего прохода по бирже.</div>}
+      {data && data.length === 0 && <div className="rounded-xl border border-dashed bg-card p-10 text-center text-sm text-muted-foreground">Переговоров пока нет. Поручите агенту груз на странице «Грузы» — или, когда владелец включит автостарт, агент сам возьмёт лучшие.</div>}
       <div className="grid auto-cols-[minmax(15rem,1fr)] grid-flow-col gap-4 overflow-x-auto pb-2">
         {COLS.map((c) => {
           const items = data?.filter((d) => d.status === c.id) ?? []
@@ -62,7 +62,7 @@ export default function DialogsPage() {
                   <button key={d.id} onClick={() => setOpenId(d.id)} className="rounded-lg border bg-card p-3 text-left text-sm shadow-xs transition-shadow hover:shadow-sm">
                     {r && <div className="flex items-center gap-1 font-medium">{r.loading.location.city}<ArrowRight className="size-3.5 text-muted-foreground" />{r.unloading.location.city}</div>}
                     <div className="mt-0.5 truncate text-xs text-muted-foreground">{r?.firm?.name}</div>
-                    <div className="mt-2 line-clamp-3 text-xs">{d.status === "writing" ? <span className="inline-flex items-center gap-1 text-primary"><Loader2 className="size-3 animate-spin" />{d.summary}</span> : d.summary}</div>
+                    <div className={cn("mt-2 line-clamp-3 text-xs", d.summary?.startsWith("Ошибка") && "font-medium text-destructive")}>{d.status === "writing" ? <span className="inline-flex items-center gap-1 text-primary"><Loader2 className="size-3 animate-spin" />{d.summary}</span> : d.summary}</div>
                     {last && <div className="mt-2 border-t pt-2 text-xs text-muted-foreground"><span className="font-medium">{last.mine ? "Агент" : "Заказчик"}:</span> <span className="line-clamp-2">{last.text}</span></div>}
                     {d.facts?.price && <div className="mt-2 text-xs font-medium text-emerald-700">Ставка: {d.facts.price}</div>}
                   </button>
@@ -193,7 +193,7 @@ function CallRow({ c }: { c: Call }) {
         <span className="ml-auto text-xs text-muted-foreground">{c.by_login && c.by_login !== "агент" ? c.by_login : "агент"} · {ago(c.created)}</span>
       </div>
       {c.error && <div className="mt-1 text-xs text-destructive">{c.error}</div>}
-      {c.recording_url && <audio controls preload="none" src={c.recording_url} className="mt-2 h-8 w-full" aria-label={`Запись звонка ${c.phone}`} />}
+      {c.recording_url?.startsWith("/api/") && <audio controls preload="none" src={c.recording_url} className="mt-2 h-8 w-full" aria-label={`Запись звонка ${c.phone}`} />}
     </div>
   )
 }

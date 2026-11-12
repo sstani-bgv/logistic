@@ -10,3 +10,6 @@ call/
 screens/
 server/recordings/
 server/eval-*.md
+backup.env
+LOCAL_LOGIN.txt
+.pytest_cache/

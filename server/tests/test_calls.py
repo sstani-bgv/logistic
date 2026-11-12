@@ -134,7 +134,8 @@ def test_mock_call_end_to_end(monkeypatch, clean):
         return call["id"]
     cid = asyncio.run(go())
     c = main.q("select * from calls where id=?", cid)[0]
-    assert c["status"] == "done" and c["duration"] == 74 and c["cost"] == 6 and "Шестьдесят" in c["transcript"]
+    # 2 мин × (3 связь + 6 голос)
+    assert c["status"] == "done" and c["duration"] == 74 and c["cost"] == 18 and "Шестьдесят" in c["transcript"]
     m = main.q("select * from messages where id=?", f"call-{cid}")[0]
     assert m["kind"] == "call" and m["mine"] == 0
     assert clean == [did]  # negotiate по расшифровке
@@ -207,7 +208,7 @@ def test_webhook(monkeypatch):
                                                         "duration": "125"})
     assert r.json() == {"ok": True, "matched": True}
     c = main.q("select * from calls")[0]
-    assert (c["status"], c["duration"], c["cost"]) == ("done", 125, 9)
+    assert (c["status"], c["duration"], c["cost"]) == ("done", 125, 27)
     r = anon.post("/api/telephony/webhook/s3cret", json={"provider_id": "abc", "transcript": "Заказчик: да"})
     assert r.json()["matched"] and main.q("select kind from messages")[0]["kind"] == "call"
 
@@ -243,7 +244,7 @@ def test_empty_values_do_not_overwrite(clean):
     asyncio.run(main.apply_call_result(cid, {"status": "done", "duration": 90, "transcript": "Заказчик: да"}))
     asyncio.run(main.apply_call_result(cid, {"status": "done", "duration": 0, "transcript": "", "recording_url": ""}))
     c = main.q("select * from calls")[0]
-    assert (c["transcript"], c["duration"], c["cost"]) == ("Заказчик: да", 90, 6)
+    assert (c["transcript"], c["duration"], c["cost"]) == ("Заказчик: да", 90, 18)
 
 
 def test_done_not_downgraded(clean):
@@ -293,6 +294,8 @@ def test_telephony_glitch_does_not_redial_every_minute():
 
 def test_telephony_error_is_reported(make_client, monkeypatch):
     class Broken:
+        ready, mode, why = True, "megafon", ""
+
         async def start(self, call, ctx):
             raise RuntimeError("ВАТС не настроена")
     monkeypatch.setattr(main, "PHONE", Broken())

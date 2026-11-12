@@ -37,13 +37,18 @@ export default function App() {
   return <Shell me={me} onLogout={logout} />
 }
 
+const PART: Record<string, string> = { ati: "АТИ", llm: "Модель", phone: "Звонки", backup: "Бэкап", agent: "Агент" }
+
 function Shell({ me, onLogout }: { me: User; onLogout: () => void }) {
   const nav = NAV.filter((n) => !("owner" in n) || me.role === "owner")
   const [page, setPage] = useState<Page>(() => (nav.find((n) => n.id === location.hash.slice(1))?.id ?? "loads"))
   useEffect(() => { location.hash = page }, [page])
-  const { data: s } = usePoll<Stats>("/stats", 4000)
-  const { data: st } = usePoll<{ send_enabled?: boolean; auto_start?: boolean }>("/settings", 30000)
+  const { data: s, offline } = usePoll<Stats>("/stats", 4000)
+  const { data: st } = usePoll<{ send_enabled?: boolean; auto_start?: boolean; call_enabled?: boolean }>("/settings", 30000)
   const agentOff = !!st && !st.send_enabled && !st.auto_start
+  const problems = s?.health?.problems ?? []
+  const errors = problems.filter((p) => p.level === "error")
+  const atiBad = s?.health?.ati_ok === false || errors.some((p) => p.part === "ati")
 
   const counters: Record<string, number | undefined> = { loads: s?.relevant, dialogs: s ? s.dialogs + s.ready : undefined, knowledge: s?.rules }
 
@@ -69,9 +74,15 @@ function Shell({ me, onLogout }: { me: User; onLogout: () => void }) {
               </button>
             ))}
           </nav>
-          <div className="mt-auto rounded-lg border bg-muted/40 p-3 text-xs">
-            <div className="mb-1 flex items-center gap-1.5 font-medium"><span className="size-2 animate-pulse rounded-full bg-emerald-500" />Мониторинг АТИ включён</div>
-            <div className="text-muted-foreground">{s?.me?.name ? `Аккаунт: ${s.me.name}` : "Подключение…"}</div>
+          <div className={cn("mt-auto rounded-lg border p-3 text-xs", atiBad ? "border-red-300 bg-red-50 dark:border-red-900 dark:bg-red-950/40" : "bg-muted/40")} role="status">
+            <div className="mb-1 flex items-center gap-1.5 font-medium">
+              <span className={cn("size-2 rounded-full", offline ? "bg-amber-500" : atiBad ? "bg-red-500" : s?.health?.ati_ok ? "animate-pulse bg-emerald-500" : "bg-muted-foreground")} />
+              {offline ? "Нет связи с сервером" : atiBad ? "АТИ: ошибка" : s?.health?.ati_ok ? "Мониторинг АТИ работает" : "Подключаемся к АТИ…"}
+            </div>
+            <div className="text-muted-foreground">
+              {atiBad ? errors.find((p) => p.part === "ati")?.text : s?.me?.name ? `Аккаунт: ${s.me.name}` : "Проверяем токен и тариф"}
+              {!atiBad && !!s?.health?.ati_last_scan && <> · проход {ago(s.health.ati_last_scan)}</>}
+            </div>
           </div>
           <div className="mt-3 flex items-center justify-between gap-2 px-1 text-sm">
             <div className="min-w-0 truncate"><span className="font-medium">{me.login}</span> <span className="text-xs text-muted-foreground">{me.role === "owner" ? "владелец" : "логист"}</span></div>
@@ -90,9 +101,22 @@ function Shell({ me, onLogout }: { me: User; onLogout: () => void }) {
           </header>
           <div className="flex gap-6 px-4 py-6 md:px-8">
             <div className="min-w-0 flex-1">
+              {offline && (
+                <div role="alert" className="mb-5 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
+                  <b>Нет связи с сервером.</b> На экране последние полученные данные — они могут быть устаревшими.
+                </div>
+              )}
+              {problems.filter((p) => p.level !== "info").length > 0 && (
+                <div role="alert" className="mb-5 flex flex-col gap-1 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-950 dark:border-red-900 dark:bg-red-950/40 dark:text-red-100">
+                  <b>Требует внимания</b>
+                  {problems.filter((p) => p.level !== "info").map((p, i) => (
+                    <div key={i} className="flex gap-2"><span className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", p.level === "error" ? "bg-red-500" : "bg-amber-500")} />{PART[p.part]}: {p.text}</div>
+                  ))}
+                </div>
+              )}
               {agentOff && (
                 <div role="status" className="mb-5 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-950 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-100">
-                  <span className="min-w-0 flex-1"><b>Агент пока выключен.</b> Ассистент ищет и оценивает грузы, но никому не пишет и не звонит — можно спокойно осмотреться.
+                  <span className="min-w-0 flex-1"><b>Агент пока выключен.</b> Ассистент ищет и оценивает грузы, но никому не пишет{st?.call_enabled ? "" : " и не звонит"} — можно спокойно осмотреться.
                     {me.role === "owner" ? " Когда будете готовы — включите агента в настройках." : " Включает владелец."}</span>
                   {me.role === "owner" && page !== "settings" && <Button size="sm" variant="outline" onClick={() => setPage("settings")}>Открыть настройки</Button>}
                 </div>

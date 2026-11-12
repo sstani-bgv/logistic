@@ -21,8 +21,11 @@ gunzip -c "$src" > "$tmp/data.db"
 [ -f "$DATA/data.db" ] && cp "$DATA/data.db" "$DATA/data.db.before-restore-$(date +%F_%H%M%S)"
 rm -f "$DATA/data.db-wal" "$DATA/data.db-shm"
 mv "$tmp/data.db" "$DATA/data.db"
+# приложение работает от uid 10001 — база и записи должны принадлежать ему, иначе «readonly database»
+[ "$(id -u)" = 0 ] && chown "${APP_UID:-10001}:${APP_UID:-10001}" "$DATA/data.db"
 if [ -n "${BACKUP_BUCKET:-}" ] && [ "${WITH_RECORDINGS:-1}" = 1 ]; then
   mkdir -p "$DATA/recordings"
   rclone copy "s3:$BACKUP_BUCKET/recordings/" "$DATA/recordings/" --s3-no-check-bucket && echo "Записи звонков восстановлены из S3"
+  [ "$(id -u)" = 0 ] && chown -R "${APP_UID:-10001}:${APP_UID:-10001}" "$DATA/recordings"
 fi
 echo "Восстановлено из $src: $(sqlite3 "$DATA/data.db" 'select count(*) from trucks') машин, $(sqlite3 "$DATA/data.db" 'select count(*) from dialogs') диалогов"

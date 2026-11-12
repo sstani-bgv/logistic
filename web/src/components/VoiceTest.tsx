@@ -5,20 +5,6 @@ import { Button } from "@/components/ui/button"
 // Тестовый звонок: логист играет заказчика, агент говорит голосом по сценарию диалога (Yandex Realtime через сервер).
 // Звук — как у голосового менеджера на сайте (ai-managers-site/site/demo.js): PCM16 44,1 кГц, перебивать можно.
 const RATE = 44100
-const WORKLET = `registerProcessor('mic', class extends AudioWorkletProcessor {
-  constructor() { super(); this.step = sampleRate / ${RATE}; this.t = 0; this.p = 0; this.o = new Int16Array(${RATE / 10}); this.n = 0; }
-  process([[x]]) {
-    if (!x) return true;
-    for (; this.t < x.length - 1; this.t += this.step) {
-      const i = Math.floor(this.t), a = i < 0 ? this.p : x[i];
-      this.o[this.n++] = Math.max(-1, Math.min(1, a + (x[i + 1] - a) * (this.t - i))) * 32767;
-      if (this.n === ${RATE / 10}) { this.port.postMessage(this.o.buffer, [this.o.buffer]); this.o = new Int16Array(${RATE / 10}); this.n = 0; }
-    }
-    this.t -= x.length;
-    this.p = x[x.length - 1];
-    return true;
-  }
-});`
 
 type Call = {
   ctx: AudioContext; out: GainNode; ws?: WebSocket; stream?: MediaStream
@@ -97,22 +83,27 @@ export default function VoiceTest({ dialogId }: { dialogId: number }) {
     setState("connecting")
     try {
       c.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
-    } catch {
-      if (call.current === c) hang({ text: "Нет доступа к микрофону — разрешите его в браузере." })
+    } catch (e) {
+      const name = e instanceof DOMException ? e.name : ""
+      const text = name === "NotAllowedError" ? "Нет доступа к микрофону — разрешите его в браузере."
+        : name === "NotFoundError" ? "Микрофон не найден." : name === "NotReadableError" ? "Микрофон занят другой программой."
+        : `Микрофон не включился${name ? ` (${name})` : ""}.`
+      if (call.current === c) hang({ text })
       return
     }
     if (call.current !== c) { c.stream.getTracks().forEach((t) => t.stop()); return }
     try {
-      await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" })))
-    } catch {
-      if (call.current === c) hang({ text: "Звук в этом браузере не запустился." })
+      await ctx.audioWorklet.addModule("/mic-worklet.js")
+    } catch (e) {
+      if (call.current === c) hang({ text: `Звук в этом браузере не запустился${e instanceof Error ? ` (${e.message})` : ""}.` })
       return
     }
     if (call.current !== c) return
     const ws = (c.ws = new WebSocket(`${location.origin.replace(/^http/, "ws")}/api/voice/test/${dialogId}`))
     ws.onmessage = (e) => {
       if (call.current !== c) return
-      const ev: Ev = JSON.parse(e.data)
+      let ev: Ev
+      try { ev = JSON.parse(e.data) } catch { return }
       if (ev.type === "response.created") c.live = true
       else if (ev.type === "response.output_audio.delta") play(c, ev)
       else if (ev.type === "input_audio_buffer.speech_started") interrupt(c)

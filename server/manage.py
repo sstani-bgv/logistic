@@ -49,6 +49,8 @@ async def check_ati():
         except Exception as e:
             ok = False
             print(f"✗ {name}: {e}")
+    if not ati.CLIENT_ID_SET:
+        print("! ATI_CLIENT_ID не задан — в User-Agent уходит ID интегратора")
     await step("аккаунт (firms/contacts)", ati.me())
     truck = {"city_id": 1, "radius": 100, "body_mask": 1}  # СПб — проверка доступа к поиску
     await step("поиск грузов", _count(ati.search(truck, 1)))

@@ -38,7 +38,10 @@ export type LogItem = { ts: number; text: string; kind: string }
 export type Stats = {
   seen: number; relevant: number; filtered: number; views: number; scans: number; dialogs: number; ready: number
   rules: number; hours_saved: number; me: { name?: string; ati_id?: string }; log: LogItem[]
+  health?: Health
 }
+export type Problem = { part: "ati" | "llm" | "phone" | "backup" | "agent"; text: string; level: "error" | "warn" | "info" }
+export type Health = { problems: Problem[]; ati_ok: boolean | null; ati_last_scan: number; telephony: "off" | "mock" | "megafon" }
 
 export type DialogPatchResult = { ok: boolean; truck?: Truck | null }
 export type Role = "owner" | "logist"

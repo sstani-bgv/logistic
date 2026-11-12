@@ -6,3 +6,12 @@ web/dist
 server/data.db*
 server/recordings
 **/__pycache__
+**/.env*
+!.env.example
+backup.env
+LOCAL_LOGIN.txt
+server/eval-*.md
+**/.pytest_cache
+server/tests
+docs
+.claude

@@ -13,6 +13,8 @@ import pytest
 import calls
 import main
 
+ORIG_NEGOTIATE = main.agent.negotiate
+
 TODAY = date.today()
 TOMORROW = (TODAY + timedelta(days=1)).isoformat()
 UNLOAD = (TODAY + timedelta(days=3)).isoformat()
@@ -147,7 +149,7 @@ def test_acceptance_end_to_end(world):
     d = logist.get("/api/dialogs").json()[0]
     assert d["status"] == "waiting" and d["chat_id"] == "chat-1" and ati.chats == ["42.7"]
     assert ati.sent and ati.sent[0][0] == "chat-1" and "актуален" in ati.sent[0][1]
-    assert world["seen"][0]["goal"] == main.settings()["default_goal"]  # та же цель, что в настройках
+    assert world["seen"][0]["goal"] == main.settings()["default_goal"].replace("{min_rate_km}", "55")  # та же цель, что в настройках
 
     # --- раньше N минут — не звоним
     assert run(main.call_tick) == []
@@ -161,6 +163,7 @@ def test_acceptance_end_to_end(world):
     d = logist.get("/api/dialogs").json()[0]
     c = d["calls"][0]
     assert c["status"] == "done" and c["duration"] == 74 and c["cost"] > 0 and c["phone"] == PHONE
+    assert main.telephony.MOCK_MARK in c["transcript"]  # имитацию видно — её не спутать с настоящим разговором
     assert "Шестьдесят тысяч" in c["transcript"]
     kinds = [m["kind"] for m in d["messages"]]
     assert kinds[-1] == "call" and "Шестьдесят тысяч" in d["messages"][-1]["text"]
@@ -180,7 +183,7 @@ def test_acceptance_end_to_end(world):
 
     # --- автор ручных действий — в журнале
     acts = [(a["login"], a["action"]) for a in owner.get("/api/actions").json()]
-    assert ("olga", "dialog_taken") in acts or any(l == "olga" and "taken" in a for l, a in acts)
+    assert ("olga", "dialog_taken") in acts
     assert ("boss", "settings") in acts and ("boss", "truck_add") in acts
 
     # --- «занятая машина становится свободной с free_from»
@@ -201,27 +204,37 @@ def mk_waiting_dialog(lid, phone=PHONE, minutes_silent=20):
     return did
 
 
-def test_no_calls_outside_window_over_limit_or_dnc(world):
+def test_no_calls_outside_window_over_limit_or_dnc(world, monkeypatch):
     owner = world["owner"]
     owner.post("/api/trucks", json=truck_body("Volvo"))
-    now_h = time.localtime().tm_hour
-    closed = f"{(now_h + 2) % 24:02d}:00-{(now_h + 3) % 24:02d}:00"  # окно, в которое мы сейчас точно не попадаем
-    owner.put("/api/settings", json={"call_enabled": True, "call_hours": closed, "call_daily": 1})
-    mk_waiting_dialog("W1", "+79215550001")
-    assert run(main.call_tick) == []  # «звонков вне окна нет»
+    msk_03 = time.mktime(time.strptime(f"{TODAY.isoformat()} 03:00", "%Y-%m-%d %H:%M"))  # процесс живёт по Москве
+    owner.put("/api/settings", json={"call_enabled": True, "call_hours": "09:00-19:00", "call_daily": 1})
+    w1 = mk_waiting_dialog("W1", "+79215550001")
+    monkeypatch.setattr(calls.time, "time", lambda: msk_03)
+    assert run(main.call_tick) == []  # «звонков вне окна нет» — в 03:00 МСК
+    assert main.q("select count(*) n from calls")[0]["n"] == 0
+    monkeypatch.undo()
 
-    owner.put("/api/settings", json={"call_hours": "00:00-24:00"})
-    mk_waiting_dialog("W2", "+79215550002")
-    made = run(main.call_tick)
-    assert sum(1 for x in made if x[1] and x[1]["status"] != "failed" and not x[2]) == 1  # «сверх лимита нет»: call_daily=1
-    assert any(x[2] and "лимит" in x[2] for x in made) or len(made) == 1
+    owner.put("/api/settings", json={"call_hours": "00:00-24:00"})  # позитивный контроль: тот же диалог в окне звонит
+    w2 = mk_waiting_dialog("W2", "+79215550002")
+    made = dict((x[0], x[2]) for x in run(main.call_tick))
+    assert set(made) == {w1, w2}
+    assert sorted([made[w1], made[w2]], key=str) == sorted([None, "дневной лимит звонков (1) исчерпан"], key=str)
+    assert main.q("select count(*) n from calls")[0]["n"] == 1  # «сверх лимита нет»
 
     owner.put("/api/settings", json={"call_daily": 20})
     did = mk_waiting_dialog("W3", "+79215550003")
     owner.post("/api/dnc", json={"phone": "+7 921 555-00-03", "reason": "просили"})
-    made = run(main.call_tick)
-    assert all(x[0] != did or x[2] == "номер в стоп-листе" for x in made)  # «стоп-лист работает»
+    made = dict((x[0], x[2]) for x in run(main.call_tick))
+    assert made[did] == "номер в стоп-листе"  # «стоп-лист работает»
     assert not main.q("select 1 from calls c join dialogs d on d.id=c.dialog_id where d.load_id='W3'")
+
+
+def test_call_after_exactly_n_minutes(world):
+    world["owner"].put("/api/settings", json={"call_enabled": True, "call_hours": "00:00-24:00", "call_after_min": 15})
+    early = mk_waiting_dialog("E1", "+79215550021", minutes_silent=14.9)
+    late = mk_waiting_dialog("E2", "+79215550022", minutes_silent=15.1)
+    assert [x[0] for x in run(main.call_tick)] == [late] and early
 
 
 def test_call_asks_not_to_call_goes_to_dnc(world, monkeypatch):
@@ -256,13 +269,14 @@ def test_chat_missing_but_phone_calls_right_away(world, monkeypatch):
 
 
 def test_invalid_model_json_goes_to_summary(world, monkeypatch):
-    """2.1: «при невалидном JSON — ошибка в summary»; и любая другая ошибка шага тоже видна логисту."""
+    """2.1: «при невалидном JSON — ошибка в summary» — через настоящий negotiate и разбор ответа модели."""
+    import httpx
     world["owner"].post("/api/trucks", json=truck_body("Volvo"))
     did = mk_waiting_dialog("J1")
-
-    async def broken(*a):
-        raise main.llm.LLMError("Модель вернула невалидный JSON")
-    monkeypatch.setattr(main.agent, "negotiate", broken)
+    monkeypatch.setattr(main.agent, "negotiate", ORIG_NEGOTIATE)
+    monkeypatch.setenv("LLM_BASE_URL", "http://llm.test/v1")
+    monkeypatch.setattr(main.llm, "TRANSPORT", httpx.MockTransport(
+        lambda r: httpx.Response(200, json={"choices": [{"message": {"content": "это не json"}}]})))
     run(lambda: main.agent_step(main.q("select * from dialogs where id=?", did)[0]))
     d = main.q("select * from dialogs where id=?", did)[0]
     assert d["status"] == "waiting" and "невалидный JSON" in d["summary"]

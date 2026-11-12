@@ -116,6 +116,8 @@ def test_backup_state(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("reply, held", [("Подтверждаем рейс, ставим машину завтра", True), ("Хорошо, берём!", True),
                                          ("Логист перезвонит и подтвердит. Адрес погрузки?", False),
+                                         ("Вы согласны на оплату по факту?", False), ("Берём ли мы — решает логист.", False),
+                                         ("Нас устраивает ставка, ждите машину.", True), ("Машина подходит?", False),
                                          ("Не возим кирпич — бьётся тент, это наше правило", True), ("Ок" * 400, True)])
 def test_risky_reply_becomes_draft(monkeypatch, reply, held):
     did = dialog(truck(), load_raw(), status="waiting")
@@ -134,6 +136,8 @@ def test_risky_reply_becomes_draft(monkeypatch, reply, held):
     asyncio.run(main.agent_step(main.q("select * from dialogs where id=?", did)[0]))
     draft = main.q("select draft from dialogs where id=?", did)[0]["draft"]
     assert (draft == reply and not sent) if held else (sent == [reply] and draft is None)
+    if held:  # логист видит, что ответ задержан
+        assert main.q("select summary from dialogs where id=?", did)[0]["summary"].startswith("⚠ Ответ задержан")
 
 
 # --- повтор после сбоя модели: потерянный ответ заказчика ---

@@ -73,9 +73,11 @@ def collect(ev, turns, buf):
     ответ, который собеседник перебил, — с «…», огрызки в одну-две буквы не пишем."""
     t, said = ev.get("type"), str(ev.get("transcript") or "").strip()
     if t == HEARD and said:
-        prev = buf.get("_heard", "")
-        new = said[len(prev):].strip() if prev and said.lower().startswith(prev.lower()) else said
-        buf["_heard"] = said
+        # сравниваем по словам без пунктуации и регистра: распознавание может поправить «Да слушаю» → «Да, слушаю вас»
+        words, prev = said.split(), buf.get("_heard", [])
+        norm = [re.sub(r"[^\w]+", "", w.lower()) for w in words]
+        new = " ".join(words[len(prev):]) if prev and norm[:len(prev)] == prev else said
+        buf["_heard"] = norm
         if new:
             if turns and turns[-1]["who"] == "Заказчик":
                 turns[-1]["text"] += " " + new
@@ -135,10 +137,10 @@ async def talk(recv, send, instructions, c=None, greeting=None):
     bye_at = None  # агент попрощался: положить трубку, когда договорит
     async with CONNECT(c["url"], additional_headers={"Authorization": f"Api-Key {c['key']}"},
                        max_size=4 * 1024 * 1024, open_timeout=15) as up:
+        if greeting:  # в инструкции сессии, а не подменой ответа — правила действуют и в первой реплике
+            instructions += f"\nНачни звонок этой фразой, почти дословно: {greeting}"
         await up.send(json.dumps({"type": "session.update", "session": session(instructions, c)}))
         first = {"type": "response.create"}  # агент звонит — он и начинает разговор
-        if greeting:
-            first["response"] = {"instructions": f"Начни звонок этой фразой, почти дословно: {greeting}"}
         await up.send(json.dumps(first))
 
         async def down():
@@ -152,11 +154,14 @@ async def talk(recv, send, instructions, c=None, greeting=None):
                     continue
                 n = len(turns)
                 collect(ev, turns, buf)
-                if t == "response.created":
-                    said, bye_at = 0.0, None  # заговорил снова — значит, не прощается
+                if t in ("response.created", "input_audio_buffer.speech_started"):
+                    if t == "response.created":
+                        said = 0.0
+                    bye_at = None  # заговорил снова или собеседник перебил — разговор продолжается
                 elif t == "response.output_audio.delta":
                     said += len(ev.get("delta") or "") * 3 / 4 / (2 * RATE)
-                elif t == "response.done" and len(turns) > n and turns[-1]["who"] == "Агент" and BYE.search(turns[-1]["text"]):
+                elif (t == "response.done" and (ev.get("response") or {}).get("status", "completed") == "completed"
+                      and len(turns) > n and turns[-1]["who"] == "Агент" and BYE.search(turns[-1]["text"])):
                     bye_at = time.monotonic() + said + 1.5
                 if t in TO_CLIENT:
                     last, heard = time.monotonic(), heard or t == "response.output_audio.delta"

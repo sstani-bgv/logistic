@@ -166,7 +166,8 @@ def test_greeting_has_route_and_goes_first(env, monkeypatch):
     async def recv():
         return None
     asyncio.run(voice.talk(recv, lambda ev: asyncio.sleep(0), "И", voice.cfg(), greeting=g))
-    assert fake.got[1] == {"type": "response.create", "response": {"instructions": f"Начни звонок этой фразой, почти дословно: {g}"}}
+    assert fake.got[0]["session"]["instructions"].endswith(f"Начни звонок этой фразой, почти дословно: {g}")
+    assert fake.got[1] == {"type": "response.create"}  # правила сессии действуют и в приветствии
 
 
 def test_call_ends_after_goodbye(env, monkeypatch):
@@ -190,3 +191,31 @@ def test_call_ends_after_goodbye(env, monkeypatch):
     reason, turns, _ = asyncio.run(voice.talk(recv, send, "И", voice.cfg()))
     assert reason == "bye" and time.monotonic() - t0 < 5  # не ждём 30 секунд тишины за деньги
     assert turns[-1]["text"].endswith("До свидания!")
+
+
+def test_interrupted_goodbye_does_not_hang_up(env, monkeypatch):
+    fake = FakeYandex([{"type": "conversation.item.input_audio_transcription.completed", "transcript": "Всё"},
+                       {"type": "response.created"},
+                       {"type": "response.output_audio_transcript.delta", "delta": "Спасибо, всего доброго"},
+                       {"type": "response.done", "response": {"status": "cancelled"}},  # заказчик перебил прощание
+                       {"type": "input_audio_buffer.speech_started"}])
+    monkeypatch.setattr(voice, "CONNECT", fake)
+    monkeypatch.setenv("VOICE_IDLE_SEC", "3")
+    sent = [{"type": "input_audio_buffer.append", "audio": "QQ=="}]
+
+    async def recv():
+        if sent:
+            return sent.pop()
+        await asyncio.sleep(60)
+
+    async def send(ev):
+        pass
+    reason, turns, _ = asyncio.run(voice.talk(recv, send, "И", voice.cfg()))
+    assert reason == "idle"  # трубку по прощанию не положили — собеседник ещё говорил
+
+
+def test_collect_punctuation_fix_not_duplicated():
+    turns, buf = [], {}
+    voice.collect({"type": voice.HEARD, "transcript": "Да слушаю"}, turns, buf)
+    voice.collect({"type": voice.HEARD, "transcript": "Да, слушаю вас."}, turns, buf)
+    assert voice.transcript(turns) == "Заказчик: Да слушаю вас."

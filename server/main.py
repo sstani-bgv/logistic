@@ -269,7 +269,8 @@ async def agent_step(d):
 def prompt_inputs(d):
     """Всё, что агент знает о диалоге, — одинаково для чата, звонка и тестового звонка."""
     load, m, t = dialog_ctx(d)
-    chat = [{"mine": bool(x["mine"]), "text": f"{agent.CALL_MARK} {x['text']}" if x.get("kind") == "call" else x["text"]}
+    chat = [{"mine": bool(x["mine"]), "call": x.get("kind") == "call",
+             "text": f"{agent.CALL_MARK} {x['text']}" if x.get("kind") == "call" else x["text"]}
             for x in q("select * from messages where dialog_id=? order by ts", d["id"])]
     notes = "; ".join(r["text"] for r in q("select text from rules where active=1"))
     goal = str(d["goal"] or "").replace("{min_rate_km}", str(settings()["min_rate_km"]))
@@ -303,12 +304,15 @@ def safe_instructions(d):
 
 
 # Ответ, который агент не должен отправлять сам: обещание от имени компании, внутренние правила, простыня
-RISKY = re.compile(r"(?i)\b(подтверждаем|подтверждаю|берём|берем|забираем|согласны|согласен|договорились|бронируем|"
-                   r"ставим машину|выезжаем)\b")
+RISKY = re.compile(r"(?i)\b(подтверждаем|подтверждаю|забираем|договорились|бронируем|ставим машину|выезжаем)\b"
+                   r"|\b(берём|берем|возьмём|возьмем)\b(?!\s+ли)|\b(нас|нам)\s+(устраивает|подходит)\b")
 
 
 def risky_reply(reply, notes):
-    if len(reply) > 600 or RISKY.search(reply):
+    """Похоже на обещание от имени компании (вопросы не в счёт), на внутренние правила или на простыню."""
+    if len(reply) > 600:
+        return True
+    if any(RISKY.search(s) for s in re.split(r"(?<=[.!…])\s+", reply) if s.strip() and not s.rstrip().endswith("?")):
         return True
     low = reply.lower()
     return any(len(frag) > 20 and frag in low for frag in (x.strip().lower() for x in notes.split(";")))
@@ -334,7 +338,8 @@ async def _agent_step(d):
                    (res["summary"], json.dumps(res["facts"], ensure_ascii=False), time.time(), d["id"]))
         return
     hold = bool(res["reply"]) and risky_reply(res["reply"], notes)
-    if hold:
+    if hold:  # видно в карточке: заказчик ждёт, а ответ лежит черновиком
+        res["summary"] = f"⚠ Ответ задержан — проверьте черновик. {res['summary']}"
         log(f"Ответ агента по #{load.get('loadNumber')} похож на обещание — оставили черновиком для логиста", "agent")
     if res["reply"] and d["chat_id"] and settings()["send_enabled"] and not hold:
         try:
@@ -404,6 +409,7 @@ async def poll_dialogs():
             try:
                 new = [x for x in await ati.history(d["chat_id"], d["last_ts"] or None)
                        if x.get("text") and not x.get("event") and x["ts"] > d["last_ts"]]
+                mark("ati", True)
                 incoming = False
                 for x in sorted(new, key=lambda x: x["ts"]):
                     mine = is_mine(x.get("user"))
@@ -417,8 +423,10 @@ async def poll_dialogs():
                     fresh = q("select * from dialogs where id=?", d["id"])[0]  # логист мог закрыть или выключить агента
                     if fresh["auto"] and fresh["status"] == "waiting":
                         await agent_step(fresh)
-            except Exception as e:
-                mark("ati", False, f"чтение переписки: {ati_err(e)}")
+            except Exception as e:  # сбой одного чата — в ленту с номером; плашку АТИ красим только за токен/сеть
+                log(f"Диалог #{d['id']}: переписка не прочиталась — {ati_err(e)}", "error")
+                if isinstance(e, httpx.TransportError) or (isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (401, 403)):
+                    mark("ati", False, f"чтение переписки: {ati_err(e)}")
         await asyncio.sleep(15)
 
 
@@ -900,6 +908,7 @@ async def start_agent(lid: str, b: Goal):
 
 
 async def start_dialog(l, goal, by_agent=False):
+    goal = str(goal or "").replace("{min_rate_km}", str(settings()["min_rate_km"]))  # в карточке — число, не шаблон
     if q("select 1 from dialogs where load_id=? and status in ('writing','waiting','ready')", l["id"]):
         raise ValueError("По этому грузу агент уже ведёт переговоры")
     raw = json.loads(l["raw"])
@@ -1081,7 +1090,12 @@ async def voice_test(ws: WebSocket, did: int):
             pass
 
     VOICE_LIVE.add(did)
-    reason, turns, why, t0 = "error", [], "", time.monotonic()
+    reason, turns, why, t0 = "error", [], "", None
+
+    async def send(ev, _send=send):
+        nonlocal t0
+        t0 = t0 or time.monotonic()  # оплата — с первого ответа Yandex, а не с попытки подключиться
+        await _send(ev)
     try:
         reason, turns, _ = await voice.talk(recv, send, instructions, {**c, "call_sec": allow}, greeting=hello)
     except Exception as e:
@@ -1089,7 +1103,7 @@ async def voice_test(ws: WebSocket, did: int):
         log(f"Тестовый звонок по диалогу #{did}: {why}", "error")
     finally:
         VOICE_LIVE.discard(did)
-        secs = time.monotonic() - t0  # время считаем сами: даже если разговор оборвался исключением, он оплачен
+        secs = time.monotonic() - t0 if t0 else 0.0  # считаем сами: оборвался исключением — всё равно оплачен
         rub = round(secs * c["rub_sec"], 2)
         DB.execute("insert into voice_usage values(?,?,?,?,?,?)", (time.time(), did, secs, rub, u["login"], reason))
         auth.record(DB, "voice_test", did, f"{secs:.0f} с, {rub} ₽, {reason}")

@@ -6,13 +6,12 @@ from llm import complete
 
 # Текст заказчика/объявления — данные, не команды: без переводов строк и поддельных «МЫ:», в явных границах.
 ROLE = re.compile(r"(?i)\b(мы|заказчик|агент|логист|система|system|assistant|user)\s*:")
-FENCE = re.compile(r"<<<|>>>")
 CALL_MARK = "[РАСШИФРОВКА ЗВОНКА]"
 SPEAKERS = ("Агент:", "Заказчик:")
 
 
 def clean(text, limit=1000):
-    s = FENCE.sub("", str(text or ""))
+    s = re.sub(r"[<>]{2,}", "", str(text or "")).replace(CALL_MARK, "[…]")  # ни рамок, ни поддельной метки звонка
     s = ROLE.sub(lambda m: m.group(1) + " —", s)
     s = re.sub(r"\s*[\r\n]+\s*", " / ", s).strip()
     return s[:limit] + ("…" if len(s) > limit else "")
@@ -25,7 +24,7 @@ def quote(text, limit=1000):
 def line(x):
     """Реплика переписки для промпта. Расшифровка звонка: метки говорящих — наши, слова — в границах."""
     text = str(x["text"] or "")
-    if text.startswith(CALL_MARK):
+    if x.get("call"):  # метку ставим мы по kind=call, а не по тексту — заказчик не подделает «звонок»
         parts = []
         for ln in text[len(CALL_MARK):].strip().splitlines():
             who = next((s for s in SPEAKERS if ln.strip().startswith(s)), None)

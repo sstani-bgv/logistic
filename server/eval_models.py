@@ -23,8 +23,13 @@ ROOT = Path(__file__).parent
 FACTS = ["actual", "price", "payment", "address", "time", "other"]
 
 
+def mark_calls(chat):
+    """Расшифровка звонка отмечается флагом call (как в main.prompt_inputs), а не по тексту."""
+    return [{**x, "call": bool(x.get("call")) or str(x.get("text", "")).startswith(agent.CALL_MARK)} for x in chat]
+
+
 def scenarios_from_file():
-    return json.loads((ROOT / "eval_scenarios.json").read_text())
+    return [{**s, "chat": mark_calls(s["chat"])} for s in json.loads((ROOT / "eval_scenarios.json").read_text())]
 
 
 def scenarios_from_db():
@@ -40,7 +45,8 @@ def scenarios_from_db():
             continue
         out.append({"name": f"db#{d['id']}", "load": json.loads(l["raw"]), "metrics": json.loads(l["metrics"] or "{}"),
                     "truck": dict(t), "goal": d["goal"],
-                    "chat": [{"mine": bool(m["mine"]), "text": m["text"]} for m in msgs],
+                    "chat": [{"mine": bool(m["mine"]), "call": m["kind"] == "call",
+                              "text": f"{agent.CALL_MARK} {m['text']}" if m["kind"] == "call" else m["text"]} for m in msgs],
                     "expect_status": ["ready", "waiting"] if d["status"] == "taken" else ["declined"]})
     return out
 

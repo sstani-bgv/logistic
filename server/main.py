@@ -1452,6 +1452,12 @@ async def put_settings(b: dict):
     return settings()
 
 
+@app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"], include_in_schema=False)
+async def api_not_found(path: str):
+    """Неизвестный /api/* — 404, но только после проверки входа (как и всё под /api), собран фронт или нет."""
+    raise HTTPException(404)
+
+
 DIST = ROOT.parent / "web" / "dist"
 if DIST.exists():
     app.mount("/assets", StaticFiles(directory=DIST / "assets"), name="assets")

@@ -170,4 +170,15 @@ def test_prompt_forbids_confirming():
     calls = serve(json.dumps(GOOD))
     run(agent.negotiate(LOAD, METRICS, TRUCK, "цель", [], "", "Иван"))
     prompt = json.loads(calls[0].content)["messages"][1]["content"]
-    assert "ничего не подтверждай" in prompt and "РАСШИФРОВКА ЗВОНКА" in prompt
+    assert "ничего не покупаешь" in prompt and "не подтверждаешь" in prompt and "РАСШИФРОВКА ЗВОНКА" in prompt
+
+
+def test_chat_and_voice_share_core():
+    voice = agent.call_instructions(LOAD, METRICS, TRUCK, "узнать ставку", [{"mine": False, "text": "груз актуален"}], "", "Иван")
+    assert agent.CORE.format(me="Иван") in voice and "по телефону" in voice
+    assert "Цель переговоров: узнать ставку" in voice and "ЗАКАЗЧИК: груз актуален" in voice  # не переспрашивает известное
+    assert "Санкт-Петербург" in voice and "мессенджер" not in voice.split("Наша машина")[0]
+    calls = serve(json.dumps(GOOD))
+    run(agent.negotiate(LOAD, METRICS, TRUCK, "цель", [], "", "Иван"))
+    chat = json.loads(calls[0].content)["messages"][1]["content"]
+    assert agent.CORE.format(me="Иван") in chat and "по телефону" not in chat

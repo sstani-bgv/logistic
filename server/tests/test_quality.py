@@ -305,3 +305,9 @@ def test_rule_add_when_model_down(monkeypatch, make_client):
     monkeypatch.setattr(main.agent, "learn_rule", down)
     r = make_client("logist").post("/api/rules", json={"text": "не возим кирпич"})
     assert r.status_code == 503 and "402" in r.json()["detail"]
+
+
+def test_default_goal_shown_with_number(make_client):
+    kv(min_rate_km=60)
+    s = make_client("logist").get("/api/settings").json()
+    assert "{min_rate_km}" in s["default_goal"] and "{" not in s["default_goal_text"] and "60 ₽/км" in s["default_goal_text"]

@@ -23,7 +23,7 @@ const GROUPS: { title: string; fields: Field[] }[] = [
     { k: "auto_score", label: "С какой оценки берёт сам", type: "number" },
     { k: "auto_per_cycle", label: "Новых диалогов за проход", type: "number" },
     { k: "auto_daily", label: "Новых диалогов в день", type: "number" },
-    { k: "default_goal", label: "Сценарий по умолчанию", hint: "подставляется в окне «Поручить агенту»", type: "long" },
+    { k: "default_goal", label: "Сценарий по умолчанию", hint: "подставляется в окне «Поручить агенту»; {min_rate_km} заменится на «Минимум ₽/км чистыми»", type: "long" },
     { k: "goal_presets", label: "Готовые сценарии", hint: "кнопки в окне «Поручить агенту»: логист выбирает, что узнать", type: "list" },
   ] },
   { title: "Звонки", fields: [

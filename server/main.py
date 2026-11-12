@@ -1243,8 +1243,9 @@ async def occupy_truck(lid):
 async def trucks():
     if fleet.release_due(DB):
         rescore()
-    return q("select t.*, (select count(*) from loads l where l.truck_id=t.id and l.verdict='relevant' and l.status='new') relevant"
-             " from trucks t order by id")
+    return q("select t.*, (select count(*) from loads l where l.truck_id=t.id and l.verdict='relevant' and l.status='new'"
+             " and l.updated>=?) relevant"
+             " from trucks t order by id", time.time() - LIST_TTL)  # как в списке «Подходят»
 
 
 class Truck(BaseModel):
@@ -1397,8 +1398,15 @@ async def get_settings():
     u = auth.current()
     if u and u["role"] != "owner":  # логист настроек не видит — только цель агента для запуска диалога
         s = settings()
-        return {**{k: s[k] for k in ("default_goal", "goal_presets", "send_enabled", "auto_start", "call_enabled")}, "voice_ready": voice.cfg()["ready"]}
-    return {**settings(), "voice_ready": voice.cfg()["ready"]}
+        return {**{k: s[k] for k in ("default_goal", "goal_presets", "send_enabled", "auto_start", "call_enabled")},
+                "voice_ready": voice.cfg()["ready"], "default_goal_text": goal_text(s)}
+    s = settings()
+    return {**s, "voice_ready": voice.cfg()["ready"], "default_goal_text": goal_text(s)}
+
+
+def goal_text(s):
+    """Сценарий по умолчанию с подставленной нормой ₽/км — так его видит логист в окне «Поручить агенту»."""
+    return str(s["default_goal"]).replace("{min_rate_km}", str(s["min_rate_km"]))
 
 
 @app.get("/api/costs", dependencies=[Depends(auth.require_owner)])

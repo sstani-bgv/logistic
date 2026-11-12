@@ -79,6 +79,7 @@ export default function DialogsPage() {
 
 function ChatSheet({ d, voice, onClose, onChange }: { d: Dialog | null; voice: boolean; onClose: () => void; onChange: () => void }) {
   const [text, setText] = useState("")
+  const [goalOpen, setGoalOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const r = d?.load?.raw
   const [saving, setSaving] = useState(false)
@@ -114,17 +115,21 @@ function ChatSheet({ d, voice, onClose, onChange }: { d: Dialog | null; voice: b
     <Sheet open={!!d} onOpenChange={(o) => !o && onClose()}>
       <SheetContent className="flex w-full flex-col gap-0 p-0 sm:max-w-xl">
         {d && r && <>
+          <div className="min-h-0 flex-1 overflow-y-auto">
           <SheetHeader className="border-b p-5">
             <SheetTitle className="flex items-center gap-1.5">{r.loading.location.city}<ArrowRight className="size-4 text-muted-foreground" />{r.unloading.location.city}</SheetTitle>
             <SheetDescription>{r.firm?.name} · {r.firm?.contacts?.[0]?.name} · {d.load?.metrics.gross ? rub(d.load.metrics.gross) : "ставка по запросу"} · #{r.loadNumber}</SheetDescription>
-            <div className="mt-2 rounded-md bg-accent/70 p-2.5 text-xs"><span className="font-medium">Цель агента:</span> {d.goal}</div>
+            <button type="button" onClick={() => setGoalOpen((v) => !v)} title={goalOpen ? "Свернуть" : "Показать сценарий целиком"}
+              className={cn("mt-2 rounded-md bg-accent/70 p-2.5 text-left text-xs", !goalOpen && "line-clamp-2")}>
+              <span className="font-medium">Сценарий агента:</span> {d.goal}
+            </button>
           </SheetHeader>
           <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 border-b bg-muted/30 p-5 text-sm">
             {Object.entries(FACTS).map(([k, label]) => (
               <div key={k} className="min-w-0"><div className="text-xs text-muted-foreground">{label}</div><div title={d.facts?.[k] ?? undefined} className={cn("line-clamp-3 break-words", !d.facts?.[k] && "text-muted-foreground")}>{d.facts?.[k] ?? "—"}</div></div>
             ))}
           </div>
-          <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto p-5">
+          <div className="flex flex-col gap-2.5 p-5">
             {d.messages.length === 0 && <div className="m-auto text-sm text-muted-foreground">{d.chat_id ? "Агент готовит первое сообщение…" : "Чат не открылся — агент позвонит по телефону"}</div>}
             {d.messages.map((m) => m.kind === "call" ? (
               <div key={m.id} className="w-full rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-2 text-sm dark:border-sky-900 dark:bg-sky-950/40">
@@ -139,19 +144,20 @@ function ChatSheet({ d, voice, onClose, onChange }: { d: Dialog | null; voice: b
               </div>
             ))}
           </div>
+          {!!d.calls?.length && (
+            <div className="flex flex-col gap-2 border-t p-4">
+              {d.calls.map((c) => <CallRow key={c.id} c={c} />)}
+            </div>
+          )}
+          </div>
           {d.draft && (
             <div className="flex flex-col gap-2 border-t bg-amber-50/60 p-4 dark:bg-amber-950/20">
-              <div className="text-xs font-medium text-amber-800 dark:text-amber-300">Черновик агента — отправка выключена, заказчик его не видит</div>
+              <div className="text-xs font-medium text-amber-800 dark:text-amber-300">Черновик агента — заказчик его ещё не видит</div>
               <div className="whitespace-pre-wrap text-sm">{d.draft}</div>
               <div className="flex gap-2">
                 <Button size="sm" disabled={busy || !d.chat_id} onClick={() => ask("Отправить черновик заказчику в мессенджер АТИ?") && send(d.draft ?? "")}><Send />Отправить</Button>
                 <Button size="sm" variant="outline" onClick={() => setText(d.draft ?? "")}>Поправить</Button>
               </div>
-            </div>
-          )}
-          {!!d.calls?.length && (
-            <div className="flex flex-col gap-2 border-t p-4">
-              {d.calls.map((c) => <CallRow key={c.id} c={c} />)}
             </div>
           )}
           <div className="flex flex-col gap-3 border-t p-4">

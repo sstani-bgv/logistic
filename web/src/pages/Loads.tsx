@@ -170,12 +170,12 @@ function RejectDialog({ load, onClose, onDone }: { load: Load | null; onClose: (
 }
 
 function DelegateDialog({ load, onClose, onDone }: { load: Load | null; onClose: () => void; onDone: () => void }) {
-  const { data: st } = usePoll<{ default_goal: string; goal_presets?: string[]; send_enabled?: boolean; call_enabled?: boolean }>("/settings", 60000)
+  const { data: st } = usePoll<{ default_goal: string; default_goal_text?: string; goal_presets?: string[]; send_enabled?: boolean; call_enabled?: boolean }>("/settings", 60000)
   const [goal, setGoal] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [forLoad, setForLoad] = useState(load?.id)
   if (load?.id !== forLoad) { setForLoad(load?.id); setGoal(null) }  // другой груз — сценарий по умолчанию, не прошлый
-  const text = goal ?? st?.default_goal ?? ""
+  const text = goal ?? st?.default_goal_text ?? st?.default_goal ?? ""
   const contact = load?.raw.firm?.contacts?.[0]
   const submit = async () => {
     if (!load || busy || !text.trim()) return

@@ -61,7 +61,7 @@ export default function TrucksPage() {
             </div>
             <div className="grid grid-cols-3 gap-2 rounded-lg bg-muted/50 p-3 text-sm">
               <div><div className="text-xs text-muted-foreground">{t.status === "busy" ? "Освободится в" : "Свободна в"}</div><div className="font-medium">{t.city_name}</div></div>
-              <div><div className="text-xs text-muted-foreground">С даты</div><div className="font-medium">{ddmm(t.free_from)}</div></div>
+              <div><div className="text-xs text-muted-foreground">С даты</div><div className="font-medium">{t.free_from && t.free_from > new Date().toLocaleDateString("sv-SE") ? ddmm(t.free_from) : "сейчас"}</div></div>
               <div><div className="text-xs text-muted-foreground">Радиус</div><div className="num font-medium">{t.radius} км</div></div>
             </div>
             <div className="flex items-center justify-between">

@@ -51,7 +51,7 @@ cd server && uv run python manage.py calls status|on|off   # звонки; agent
 ## Тесты
 
 ```bash
-cd server && uv run pytest -q   # 180 passed
+cd server && uv run pytest -q   # 181 passed
 ```
 
 ## Памятка логиста

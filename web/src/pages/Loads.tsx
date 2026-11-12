@@ -119,7 +119,7 @@ function LoadCard({ l, truck, view, onReject, onDelegate }: { l: Load; truck?: T
             </div>
           </div>
           <div className="flex flex-col gap-1.5">
-            {view !== "rejected" && <Button size="sm" onClick={onDelegate} disabled={!f?.contacts?.length}><Bot />Поручить агенту</Button>}
+            {view !== "rejected" && <Button size="sm" onClick={onDelegate} disabled={!f?.contacts?.length} title={f?.contacts?.length ? undefined : "Заказчик скрыт — написать некому, откройте груз на АТИ"}><Bot />Поручить агенту</Button>}
             <div className="flex gap-1.5">
               {view !== "rejected" && <Button size="sm" variant="outline" onClick={onReject}><ThumbsDown />Не то</Button>}
               <Button size="sm" variant="ghost" asChild><a href={atiLink(r.id)} target="_blank" rel="noreferrer"><ExternalLink />АТИ</a></Button>
@@ -136,11 +136,12 @@ function RejectDialog({ load, onClose, onDone }: { load: Load | null; onClose: (
   const [learn, setLearn] = useState(true)
   const [busy, setBusy] = useState(false)
   const submit = async () => {
-    if (!load) return
+    if (!load || busy) return
     setBusy(true)
     try {
-      const res = await api<{ rule: { text: string } | null }>(`/loads/${load.id}/reject`, { body: { reason, learn } })
-      toast.success("Груз убран", { description: res.rule ? `В базу знаний: «${res.rule.text}»` : undefined })
+      const res = await api<{ rule: { text: string } | null; error?: string }>(`/loads/${load.id}/reject`, { body: { reason, learn } })
+      if (res.error) toast.warning("Груз убран", { description: res.error })
+      else toast.success("Груз убран", { description: res.rule ? `В базу знаний: «${res.rule.text}»` : undefined })
       setReason(""); onClose(); onDone()
     } catch (e) { toast.error(errText(e)) } finally { setBusy(false) }
   }
@@ -169,16 +170,19 @@ function RejectDialog({ load, onClose, onDone }: { load: Load | null; onClose: (
 }
 
 function DelegateDialog({ load, onClose, onDone }: { load: Load | null; onClose: () => void; onDone: () => void }) {
-  const { data: st } = usePoll<{ default_goal: string; goal_presets?: string[] }>("/settings", 60000)
+  const { data: st } = usePoll<{ default_goal: string; goal_presets?: string[]; send_enabled?: boolean; call_enabled?: boolean }>("/settings", 60000)
   const [goal, setGoal] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [forLoad, setForLoad] = useState(load?.id)
+  if (load?.id !== forLoad) { setForLoad(load?.id); setGoal(null) }  // другой груз — сценарий по умолчанию, не прошлый
+  const text = goal ?? st?.default_goal ?? ""
   const contact = load?.raw.firm?.contacts?.[0]
   const submit = async () => {
-    if (!load) return
+    if (!load || busy || !text.trim()) return
     setBusy(true)
     try {
-      await api(`/loads/${load.id}/agent`, { body: { goal: goal ?? st?.default_goal } })
-      toast.success("Агент взял груз в работу", { description: "Переписка — во вкладке «Переговоры»" })
+      await api(`/loads/${load.id}/agent`, { body: { goal: text } })
+      toast.success(st?.send_enabled === false ? "Агент готовит черновик" : "Агент взял груз в работу", { description: "Переписка — во вкладке «Переговоры»" })
       setGoal(null); onClose(); onDone()
     } catch (e) { toast.error(errText(e)) } finally { setBusy(false) }
   }
@@ -191,8 +195,9 @@ function DelegateDialog({ load, onClose, onDone }: { load: Load | null; onClose:
             Агент напишет {contact ? <b className="text-foreground">{contact.name}</b> : "заказчику"} в мессенджер АТИ от вашего имени и уточнит то, что нужно по сценарию. Если не ответят в чате — позвонит (когда звонки включены). Сам ничего не подтверждает: позовёт вас, когда всё будет известно.
           </DialogDescription>
         </DialogHeader>
+        {st && st.send_enabled === false && <div role="status" className="rounded-md bg-amber-50 p-2.5 text-xs text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">Отправка сообщений выключена в настройках: агент подготовит черновик, заказчику ничего не уйдёт, пока вы не нажмёте «Отправить».</div>}
         <Label htmlFor="goal">Сценарий: что узнать</Label>
-        <Textarea id="goal" rows={4} value={goal ?? st?.default_goal ?? ""} onChange={(e) => setGoal(e.target.value)} />
+        <Textarea id="goal" rows={4} value={text} onChange={(e) => setGoal(e.target.value)} />
         <div className="flex flex-wrap gap-1.5">
           {(st?.goal_presets ?? []).map((s) => (
             <button key={s} onClick={() => setGoal(s)} className="rounded-full border px-2.5 py-1 text-xs text-muted-foreground hover:bg-muted">{s}</button>
@@ -200,7 +205,7 @@ function DelegateDialog({ load, onClose, onDone }: { load: Load | null; onClose:
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Отмена</Button>
-          <Button onClick={submit} disabled={busy}>{busy ? <Loader2 className="animate-spin" /> : <Bot />}Начать переписку</Button>
+          <Button onClick={submit} disabled={busy || !text.trim()}>{busy ? <Loader2 className="animate-spin" /> : <Bot />}Начать переписку</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -45,12 +45,12 @@ export default function UsersPage({ me }: { me: User }) {
               <div className="font-medium">{u.login}{u.id === me.id && <span className="ml-2 text-xs text-muted-foreground">это вы</span>}</div>
               {!u.active && <Badge variant="outline">отключён</Badge>}
             </div>
-            <Select value={u.role} onValueChange={(v) => patch(u, { role: v as Role })}>
+            <Select value={u.role} disabled={u.id === me.id} onValueChange={(v) => patch(u, { role: v as Role })}>
               <SelectTrigger className="w-36" aria-label={`Роль ${u.login}`}><SelectValue /></SelectTrigger>
               <SelectContent>{(Object.keys(ROLE) as Role[]).map((r) => <SelectItem key={r} value={r}>{ROLE[r]}</SelectItem>)}</SelectContent>
             </Select>
             <div className="flex items-center gap-2">
-              <Switch id={`active-${u.id}`} checked={!!u.active} onCheckedChange={(v) => patch(u, { active: v })} />
+              <Switch id={`active-${u.id}`} checked={!!u.active} disabled={u.id === me.id} onCheckedChange={(v) => patch(u, { active: v })} />
               <Label htmlFor={`active-${u.id}`} className="text-sm">Доступ</Label>
             </div>
             <Button size="sm" variant="outline" onClick={() => setPwFor(u)}><KeyRound />Пароль</Button>
@@ -112,7 +112,7 @@ function PasswordDialog({ u, onClose, onSave }: { u: User | null; onClose: () =>
         <DialogHeader><DialogTitle>Новый пароль для {u?.login}</DialogTitle></DialogHeader>
         <div className="flex flex-col gap-1.5"><Label htmlFor="pw">Пароль (от 8 символов)</Label><Input id="pw" type="password" autoComplete="new-password" value={p} onChange={(e) => setP(e.target.value)} /></div>
         <p className="text-xs text-muted-foreground">Сотрудника выкинет из системы — войдёт с новым паролем.</p>
-        <DialogFooter><Button variant="outline" onClick={onClose}>Отмена</Button><Button onClick={async () => { if (await onSave(p)) { setP(""); onClose() } }}>Сохранить</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={onClose}>Отмена</Button><Button disabled={p.length < 8} onClick={async () => { if (p.length >= 8 && await onSave(p)) { setP(""); onClose() } }}>Сохранить</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   )

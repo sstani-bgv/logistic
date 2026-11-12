@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
-import { api, errText, usePoll, ago, type Rule } from "@/lib/api"
+import { api, ask, errText, usePoll, ago, type Rule } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 const MATCH: Record<string, string> = { firm_id: "фирма", firm_name: "фирма", cargo: "тип груза", load_city: "погрузка", unload_city: "выгрузка", note: "примечание", profile: "тип заказчика", none: "заметка агенту" }
@@ -19,8 +19,13 @@ export default function KnowledgePage() {
     try { const r = await api<Rule>("/rules", { body: { text } }); toast.success("Правило добавлено", { description: r.text }); setText(""); reload() }
     catch (e) { toast.error(errText(e)) } finally { setBusy(false) }
   }
-  const toggle = async (r: Rule, active: boolean) => { await api(`/rules/${r.id}`, { method: "PATCH", body: { active } }); reload() }
-  const del = async (r: Rule) => { await api(`/rules/${r.id}`, { method: "DELETE" }); reload() }
+  const toggle = async (r: Rule, active: boolean) => {
+    try { await api(`/rules/${r.id}`, { method: "PATCH", body: { active } }) } catch (e) { toast.error(errText(e)) } finally { reload() }
+  }
+  const del = async (r: Rule) => {
+    if (!ask(`Удалить правило «${r.text}»? Отсеянные им грузы снова появятся в ленте.`)) return
+    try { await api(`/rules/${r.id}`, { method: "DELETE" }) } catch (e) { toast.error(errText(e)) } finally { reload() }
+  }
 
   return (
     <div className="flex flex-col gap-6">

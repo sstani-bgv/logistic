@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
-import { api, usePoll, rub, ago, ddmm, errText, type Call, type Dialog, type DialogPatchResult } from "@/lib/api"
+import { api, ask, usePoll, rub, ago, ddmm, errText, type Call, type Dialog, type DialogPatchResult } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 const COLS = [
@@ -19,15 +19,17 @@ const COLS = [
 const FACTS: Record<string, string> = { actual: "Актуальность", price: "Ставка", payment: "Оплата", address: "Адрес", time: "Время погрузки", other: "Прочее" }
 
 export default function DialogsPage() {
-  const { data, reload } = usePoll<Dialog[]>("/dialogs", 4000)
+  const { data, reload, offline } = usePoll<Dialog[]>("/dialogs", 4000)
   const [openId, setOpenId] = useState<number | null>(null)
   const open = data?.find((d) => d.id === openId) ?? null
   const [running, setRunning] = useState(false)
   const run = async () => {
+    if (!ask("Агент сам выберет лучшие свежие грузы и напишет заказчикам в мессенджер АТИ. Продолжить?")) return
     setRunning(true)
     try {
-      const r = await api<{ started: number }>("/agent/run", { method: "POST" })
-      toast.success(r.started ? `Агент взял в работу грузов: ${r.started}` : "Новых подходящих грузов нет — агент ждёт следующего прохода")
+      const r = await api<{ started: number; reason?: string | null }>("/agent/run", { method: "POST" })
+      if (r.started) toast.success(`Агент взял в работу грузов: ${r.started}`)
+      else toast.info(r.reason ?? "Новых подходящих грузов нет")
       reload()
     } catch (e) { toast.error(errText(e)) } finally { setRunning(false) }
   }
@@ -41,12 +43,13 @@ export default function DialogsPage() {
         </div>
         <Button onClick={run} disabled={running}>{running ? <Loader2 className="animate-spin" /> : <Bot />}Взять лучшие грузы сейчас</Button>
       </div>
+      {offline && <div role="status" className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">Нет связи с сервером — показаны последние полученные данные.</div>}
       {data && data.length === 0 && <div className="rounded-xl border border-dashed bg-card p-10 text-center text-sm text-muted-foreground">Переговоров пока нет. Агент возьмёт лучшие грузы после следующего прохода по бирже.</div>}
-      <div className="grid gap-4 overflow-x-auto pb-2 lg:grid-cols-5">
+      <div className="grid auto-cols-[minmax(15rem,1fr)] grid-flow-col gap-4 overflow-x-auto pb-2">
         {COLS.map((c) => {
           const items = data?.filter((d) => d.status === c.id) ?? []
           return (
-            <div key={c.id} className="flex min-w-56 flex-col gap-2.5 rounded-xl bg-muted/60 p-2.5">
+            <div key={c.id} className="flex min-w-0 flex-col gap-2.5 rounded-xl bg-muted/60 p-2.5">
               <div className="flex items-center gap-2 px-1 text-sm font-medium">
                 <span className={cn("size-2 rounded-full", c.tone)} />{c.label}<span className="num ml-auto text-muted-foreground">{items.length}</span>
               </div>
@@ -67,7 +70,7 @@ export default function DialogsPage() {
           )
         })}
       </div>
-      <ChatSheet d={open} onClose={() => setOpenId(null)} onChange={reload} />
+      <ChatSheet key={openId ?? 0} d={open} onClose={() => setOpenId(null)} onChange={reload} />
     </div>
   )
 }
@@ -89,20 +92,20 @@ function ChatSheet({ d, onClose, onChange }: { d: Dialog | null; onClose: () => 
   }
   const [calling, setCalling] = useState(false)
   const callNow = async () => {
-    if (!d) return
+    if (!d || !ask(`Позвонить ${d.phone ?? "заказчику"} сейчас? Звонок уйдёт сразу, даже если автозвонки выключены.`)) return
     setCalling(true)
     try { const c = await api<Call>(`/dialogs/${d.id}/call`, { method: "POST" }); toast.success(`Звоним ${c.phone}`); onChange() }
     catch (e) { toast.error(errText(e)) } finally { setCalling(false) }
   }
   const noCalls = async () => {
-    if (!d?.phone) return
+    if (!d?.phone || !ask(`Больше никогда не звонить на ${d.phone}?`)) return
     try { await api("/dnc", { body: { phone: d.phone, reason: "логист: не звонить" } }); toast.success(`${d.phone} — в стоп-листе`) }
     catch (e) { toast.error(errText(e)) }
   }
-  const send = async () => {
-    if (!d || !text.trim()) return
+  const send = async (body = text) => {
+    if (!d || busy || !body.trim()) return
     setBusy(true)
-    try { await api(`/dialogs/${d.id}/send`, { body: { text } }); setText(""); onChange() }
+    try { await api(`/dialogs/${d.id}/send`, { body: { text: body } }); setText(""); onChange() }
     catch (e) { toast.error(errText(e)) } finally { setBusy(false) }
   }
   return (
@@ -116,7 +119,7 @@ function ChatSheet({ d, onClose, onChange }: { d: Dialog | null; onClose: () => 
           </SheetHeader>
           <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 border-b bg-muted/30 p-5 text-sm">
             {Object.entries(FACTS).map(([k, label]) => (
-              <div key={k} className="min-w-0"><div className="text-xs text-muted-foreground">{label}</div><div className={cn("truncate", !d.facts?.[k] && "text-muted-foreground")}>{d.facts?.[k] ?? "—"}</div></div>
+              <div key={k} className="min-w-0"><div className="text-xs text-muted-foreground">{label}</div><div className={cn("break-words", !d.facts?.[k] && "text-muted-foreground")}>{d.facts?.[k] ?? "—"}</div></div>
             ))}
           </div>
           <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto p-5">
@@ -134,6 +137,16 @@ function ChatSheet({ d, onClose, onChange }: { d: Dialog | null; onClose: () => 
               </div>
             ))}
           </div>
+          {d.draft && (
+            <div className="flex flex-col gap-2 border-t bg-amber-50/60 p-4 dark:bg-amber-950/20">
+              <div className="text-xs font-medium text-amber-800 dark:text-amber-300">Черновик агента — отправка выключена, заказчик его не видит</div>
+              <div className="whitespace-pre-wrap text-sm">{d.draft}</div>
+              <div className="flex gap-2">
+                <Button size="sm" disabled={busy || !d.chat_id} onClick={() => ask("Отправить черновик заказчику в мессенджер АТИ?") && send(d.draft ?? "")}><Send />Отправить</Button>
+                <Button size="sm" variant="outline" onClick={() => setText(d.draft ?? "")}>Поправить</Button>
+              </div>
+            </div>
+          )}
           {!!d.calls?.length && (
             <div className="flex flex-col gap-2 border-t p-4">
               {d.calls.map((c) => <CallRow key={c.id} c={c} />)}
@@ -141,16 +154,16 @@ function ChatSheet({ d, onClose, onChange }: { d: Dialog | null; onClose: () => 
           )}
           <div className="flex flex-col gap-3 border-t p-4">
             <div className="flex gap-2">
-              <Input id="manual-msg" aria-label="Сообщение заказчику" value={text} disabled={!d.chat_id} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder={d.chat_id ? "Написать вручную…" : "Чата с заказчиком нет — только звонок"} />
-              <Button size="icon" onClick={send} disabled={busy || !d.chat_id} aria-label="Отправить"><Send /></Button>
+              <Input id="manual-msg" aria-label="Сообщение заказчику" value={text} disabled={!d.chat_id} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); send() } }} placeholder={d.chat_id ? "Написать вручную…" : "Чата с заказчиком нет — только звонок"} />
+              <Button size="icon" onClick={() => send()} disabled={busy || !d.chat_id || !text.trim()} aria-label="Отправить"><Send /></Button>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Switch id="auto" checked={!!d.auto} disabled={saving} onCheckedChange={(v) => patch({ auto: v })} /><Label htmlFor="auto" className="text-sm">Агент отвечает сам</Label>
               <div className="ml-auto flex flex-wrap gap-2">
                 <Button size="sm" variant="outline" disabled={calling || !d.phone} title={d.phone ? `Позвонить ${d.phone}` : "У заказчика нет телефона в АТИ"} onClick={callNow}>{calling ? <Loader2 className="animate-spin" /> : <Phone />}Позвонить сейчас</Button>
                 {d.phone && <Button size="sm" variant="ghost" onClick={noCalls} title="Больше не звонить на этот номер"><Ban />Не звонить</Button>}
-                <Button size="sm" variant="outline" disabled={saving} onClick={() => patch({ status: "declined" })}><XCircle />Отказ</Button>
-                <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700" disabled={saving} onClick={() => patch({ status: "taken" })}><CheckCircle2 />Берём</Button>
+                <Button size="sm" variant="outline" disabled={saving} onClick={() => ask("Отказаться от груза? Переговоры закроются.") && patch({ status: "declined" })}><XCircle />Отказ</Button>
+                <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700" disabled={saving} onClick={() => ask("Берём груз? Машина станет занятой до выгрузки.") && patch({ status: "taken" })}><CheckCircle2 />Берём</Button>
               </div>
             </div>
           </div>

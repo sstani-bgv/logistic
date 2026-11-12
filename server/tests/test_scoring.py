@@ -30,3 +30,12 @@ def test_hidden_firm_does_not_crash():
     for firm in (None, {}, {"contacts": []}):
         s = scoring.score(load(58.6, 31.3, firm), TRUCK, [], dict(main.DEFAULTS))
         assert 0 <= s[0] <= 100
+
+
+def test_free_date_in_past_means_free_today():
+    from datetime import date, timedelta
+    l = load(58.6, 31.3)
+    l["loading"]["firstDate"] = (date.today() + timedelta(days=1)).isoformat()
+    old_truck = {**TRUCK, "free_from": (date.today() - timedelta(days=9)).isoformat()}
+    res = scoring.score(l, old_truck, [], dict(main.DEFAULTS))
+    assert not any("позже чем через 3 дня" in r["t"] for r in res[2])  # погрузка завтра, машина свободна сейчас

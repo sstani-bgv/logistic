@@ -30,7 +30,7 @@ export default function App() {
     window.addEventListener(AUTH_EVENT, out)
     return () => window.removeEventListener(AUTH_EVENT, out)
   }, [])
-  if (me === undefined) return null
+  if (me === undefined) return <div role="status" className="grid min-h-svh place-items-center text-sm text-muted-foreground">Загрузка…</div>
   if (!me) return <><LoginPage onLogin={setMe} /><Toaster position="bottom-right" /></>
   const logout = async () => { await api("/logout", { method: "POST" }).catch(() => {}); setMe(null) }
   return <Shell me={me} onLogout={logout} />
@@ -81,7 +81,7 @@ function Shell({ me, onLogout }: { me: User; onLogout: () => void }) {
             <div className="grid grid-cols-2 gap-px bg-border lg:grid-cols-4">
               <Stat icon={Radar} label="Просмотрено ботом сегодня" value={s?.views} hint={`${s?.scans ?? 0} проходов по бирже`} />
               <Stat icon={Filter} label="Отсеяно автоматически" value={s?.filtered} hint="не подходят по правилам" />
-              <Stat icon={Sparkles} label="Подходящих грузов" value={s?.relevant} hint={`${s?.ready ?? 0} готовы к звонку`} accent />
+              <Stat icon={Sparkles} label="Подходящих сейчас" value={s?.relevant} hint={`${s?.ready ?? 0} готовы к звонку`} accent />
               <Stat icon={Clock} label="Рутины снято с логиста" value={s ? `${s.hours_saved} ч` : undefined} hint="≈25 сек на просмотр груза" />
             </div>
           </header>

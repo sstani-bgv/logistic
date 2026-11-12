@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { api, usePoll, ddmm, errText, type Truck } from "@/lib/api"
+import { api, num, usePoll, ddmm, errText, type Truck } from "@/lib/api"
 
 const EMPTY = { id: 0, name: "", driver: "", city_name: "", radius: 150, body_mask: 1, body_name: "тент", height: 2.7, capacity: 20, free_from: new Date().toISOString().slice(0, 10), active: 1, relevant: 0, status: "free" as const }
 
@@ -81,19 +81,23 @@ export default function TrucksPage() {
 
 function TruckDialog({ t, onClose, onDone }: { t: Truck | null; onClose: () => void; onDone: () => void }) {
   const [f, setF] = useState<Truck | null>(null)
+  const [busy, setBusy] = useState(false)
   const cur = f?.id === t?.id && f ? f : t
-  const set = (k: keyof Truck, v: string | number) => setF({ ...(cur as Truck), [k]: v })
+  const set = (k: keyof Truck, v: string | number | null) => setF({ ...(cur as Truck), [k]: v })
+  const bad = !cur || !String(cur.name ?? "").trim() || !String(cur.city_name ?? "").trim() || !cur.free_from ||
+    [cur.radius, cur.height, cur.capacity].some((x) => x === null || x === undefined || !(Number(x) > 0))
   const save = async () => {
-    if (!cur) return
+    if (!cur || busy || bad) return
+    setBusy(true)
     try {
       await api(cur.id ? `/trucks/${cur.id}` : "/trucks", { method: cur.id ? "PUT" : "POST", body: { ...cur, active: !!cur.active } })
       toast.success("Сохранено — оценки грузов пересчитаны"); setF(null); onClose(); onDone()
-    } catch (e) { toast.error(errText(e)) }
+    } catch (e) { toast.error(errText(e)) } finally { setBusy(false) }
   }
   const field = (k: keyof Truck, label: string, type = "text") => (
     <div className="flex flex-col gap-1.5">
       <Label htmlFor={`t-${k}`}>{label}</Label>
-      <Input id={`t-${k}`} type={type} value={String(cur?.[k] ?? "")} onChange={(e) => set(k, type === "number" ? Number(e.target.value) : e.target.value)} />
+      <Input id={`t-${k}`} type={type} value={String(cur?.[k] ?? "")} onChange={(e) => set(k, type === "number" ? num(e.target.value) : e.target.value)} />
     </div>
   )
   return (
@@ -107,7 +111,7 @@ function TruckDialog({ t, onClose, onDone }: { t: Truck | null; onClose: () => v
           {field("capacity", "Грузоподъёмность, т", "number")}{field("body_name", "Кузов")}
         </div>
         <div className="flex items-center gap-2"><Switch id="t-active" checked={!!cur?.active} onCheckedChange={(v) => set("active", v ? 1 : 0)} /><Label htmlFor="t-active">Искать грузы</Label></div>
-        <DialogFooter><Button variant="outline" onClick={onClose}>Отмена</Button><Button onClick={save}>Сохранить</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={onClose}>Отмена</Button><Button onClick={save} disabled={busy || bad}>{busy && <Loader2 className="animate-spin" />}Сохранить</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   )

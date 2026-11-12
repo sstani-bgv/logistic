@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
-import { api, ago, errText, usePoll, type Settings } from "@/lib/api"
+import { api, ago, errText, num, usePoll, type Settings } from "@/lib/api"
 
 type Field = { k: string; label: string; hint?: string; type: "number" | "bool" | "text" | "long" | "list" }
 const GROUPS: { title: string; fields: Field[] }[] = [
@@ -39,8 +39,10 @@ export default function SettingsPage() {
   const [busy, setBusy] = useState(false)
   useEffect(() => { api<Settings>("/settings").then(setS).catch((e) => toast.error(errText(e))) }, [])
   const set = (k: string, v: unknown) => setS((p) => (p ? { ...p, [k]: v } : p))
+  const empty = s ? GROUPS.flatMap((g) => g.fields).filter((f) => f.type === "number" && f.k in s && s[f.k] === null) : []
   const save = async () => {
     if (!s) return
+    if (empty.length) { toast.error(`Заполните: ${empty.map((f) => f.label).join(", ")}`); return }
     setBusy(true)
     try { setS(await api<Settings>("/settings", { method: "PUT", body: s })); toast.success("Настройки сохранены") }
     catch (e) { toast.error(errText(e)) } finally { setBusy(false) }
@@ -81,7 +83,8 @@ export default function SettingsPage() {
                 <div key={f.k} className="flex flex-col gap-1.5">
                   <Label htmlFor={id}>{f.label}</Label>
                   <Input id={id} type={f.type} value={String(s[f.k] ?? "")} placeholder={f.hint}
-                    onChange={(e) => set(f.k, f.type === "number" ? Number(e.target.value) : e.target.value)} />
+                    aria-invalid={f.type === "number" && s[f.k] === null}
+                    onChange={(e) => set(f.k, f.type === "number" ? num(e.target.value) : e.target.value)} />
                 </div>
               )
             })}

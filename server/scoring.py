@@ -60,7 +60,7 @@ def score(load, truck, rules, settings):
         add(f"Погрузка далеко: {straight:.0f} км по прямой при радиусе {truck['radius']}", kind="block")
 
     # даты
-    free = _d(truck["free_from"]) or date.today()
+    free = max(_d(truck["free_from"]) or date.today(), date.today())  # дата освобождения в прошлом = свободна сегодня
     last = _d(ld.get("lastDate")) or _d(ld.get("firstDate"))
     if last and last < free:
         add(f"Погрузка до {last:%d.%m}, машина свободна с {free:%d.%m}", kind="block")

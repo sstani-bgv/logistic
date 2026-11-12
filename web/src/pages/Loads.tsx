@@ -188,10 +188,10 @@ function DelegateDialog({ load, onClose, onDone }: { load: Load | null; onClose:
         <DialogHeader>
           <DialogTitle>Поручить переговоры агенту</DialogTitle>
           <DialogDescription>
-            Агент напишет {contact ? <b className="text-foreground">{contact.name}</b> : "заказчику"} в мессенджер АТИ от вашего имени, будет отвечать сам и позовёт вас, когда останется только позвонить.
+            Агент напишет {contact ? <b className="text-foreground">{contact.name}</b> : "заказчику"} в мессенджер АТИ от вашего имени и уточнит то, что нужно по сценарию. Если не ответят в чате — позвонит (когда звонки включены). Сам ничего не подтверждает: позовёт вас, когда всё будет известно.
           </DialogDescription>
         </DialogHeader>
-        <Label htmlFor="goal">Цель переговоров</Label>
+        <Label htmlFor="goal">Сценарий: что узнать</Label>
         <Textarea id="goal" rows={4} value={goal ?? st?.default_goal ?? ""} onChange={(e) => setGoal(e.target.value)} />
         <div className="flex flex-wrap gap-1.5">
           {["Узнать, актуален ли груз и можно ли поднять ставку до 60 ₽/км", "Уточнить точный адрес, время погрузки и нужна ли доверенность", "Предложить нашу машину и спросить про обратную загрузку"].map((s) => (

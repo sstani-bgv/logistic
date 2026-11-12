@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 MSK = ZoneInfo("Europe/Moscow")
 NUMBER_GAP = 2 * 3600  # одному номеру — не чаще раза в 2 часа
 PER_LOAD = 2  # не больше 2 попыток на груз
+RETRY_GAP = 30 * 60  # после любой попытки по диалогу (и сбоя телефонии) — пауза перед автоповтором
 DEFAULTS = {"call_enabled": False, "call_after_min": 15, "call_hours": "09:00-19:00", "call_daily": 20}
 ACTIVE = ("queued", "ringing", "talking")  # звонок ещё идёт
 DNC_PHRASES = re.compile(r"(больше\s+)?не\s+звон(?:ите|ить|и)\b(?!\s+(на\s+этот|сюда,?\s+звоните|по\s+этому))"
@@ -100,6 +101,14 @@ def blocked_reason(db, st, phone, dialog_id, now=None, manual=False):
     if db.execute("select 1 from calls where dialog_id=? and status in (%s)" % ",".join("?" * len(ACTIVE)),
                   (dialog_id, *ACTIVE)).fetchone():
         return "звонок уже идёт"
+    if not manual:  # сбой телефонии (таймаут, пустой ответ) не должен превращаться в звонок каждую минуту
+        recent = db.execute("select 1 from calls where dialog_id=? and created>?", (dialog_id, now - RETRY_GAP)).fetchone()
+        if recent:
+            return "недавняя попытка звонка не удалась — повтор позже"
+        tries = db.execute("select count(*) from calls where dialog_id in (select id from dialogs where load_id="
+                           "(select load_id from dialogs where id=?))", (dialog_id,)).fetchone()[0]
+        if tries >= PER_LOAD * 2:
+            return "слишком много неудачных попыток по этому грузу"
     per_load = db.execute(f"select count(*) from calls where {REAL} and dialog_id in (select id from dialogs where load_id="
                           "(select load_id from dialogs where id=?))", (dialog_id,)).fetchone()[0]
     if per_load >= PER_LOAD:

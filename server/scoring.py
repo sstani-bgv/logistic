@@ -49,13 +49,15 @@ def score(load, truck, rules, settings):
     dist = load["route"].get("distance") or km(lpos, upos) * ROAD_FACTOR
 
     # холостой пробег до погрузки
-    dead = km((truck["lat"], truck["lon"]), lpos) * ROAD_FACTOR
+    # радиус — по прямой, как в поиске АТИ (иначе отсекаем то, что биржа честно нашла в радиусе); дорога ≈ прямая * 1.25
+    straight = km((truck["lat"], truck["lon"]), lpos)
+    dead = straight * ROAD_FACTOR
     if dead <= 30:
-        add(f"Погрузка рядом с машиной ({dead:.0f} км)", 10)
-    elif dead <= truck["radius"]:
-        add(f"Холостой пробег {dead:.0f} км", -round(dead / 30))
+        add(f"Погрузка рядом с машиной (≈{dead:.0f} км)", 10)
+    elif straight <= truck["radius"]:
+        add(f"Холостой пробег ≈{dead:.0f} км", -round(dead / 30))
     else:
-        add(f"Погрузка далеко: {dead:.0f} км", kind="block")
+        add(f"Погрузка далеко: {straight:.0f} км по прямой при радиусе {truck['radius']}", kind="block")
 
     # даты
     free = _d(truck["free_from"]) or date.today()
@@ -100,7 +102,7 @@ def score(load, truck, rules, settings):
     if not firm:
         add("Заказчик скрыт", -5)
     else:
-        if firm.get("userLists", {}).get("black"):
+        if (firm.get("userLists") or {}).get("black"):
             add("Фирма в вашем чёрном списке", kind="block")
         if firm.get("claims"):
             add(f"Претензии к фирме: {firm['claims']}", -15)

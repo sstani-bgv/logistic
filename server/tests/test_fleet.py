@@ -1,3 +1,4 @@
+import time
 import json
 from datetime import date, timedelta
 
@@ -193,8 +194,8 @@ def test_auto_start_skips_busy_trucks(monkeypatch):
     import asyncio
     busy = truck("busy", "busy", iso(5))
     raw = {**load_raw(), "firm": {"id": 1, "name": "F", "contacts": [{"id": 1, "name": "N"}]}}
-    main.DB.execute("insert into loads(id,truck_id,raw,score,verdict,reasons,metrics,status) values(?,?,?,?,?,?,?,?)",
-                    ("B1", busy, json.dumps(raw), 99, "relevant", "[]", "{}", "new"))
+    main.DB.execute("insert into loads(id,truck_id,raw,score,verdict,reasons,metrics,status,updated) values(?,?,?,?,?,?,?,?,?)",
+                    ("B1", busy, json.dumps(raw), 99, "relevant", "[]", "{}", "new", time.time()))
     started = []
 
     async def fake_start(l, goal, by_agent=False):
@@ -205,6 +206,10 @@ def test_auto_start_skips_busy_trucks(monkeypatch):
     main.DB.execute("update trucks set status='free' where id=?", (busy,))
     asyncio.run(main.auto_start())
     assert started == ["B1"]
+    started.clear()
+    main.DB.execute("update loads set updated=? where id='B1'", (time.time() - 86400,))  # биржа давно не показывает
+    asyncio.run(main.auto_start())
+    assert started == []
 
 
 def test_taken_with_past_unload_date_stays_busy(client):

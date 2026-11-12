@@ -7,6 +7,9 @@ import os
 import sqlite3
 import time
 
+os.environ.setdefault("TZ", "Europe/Moscow")  # «сегодня», лимиты дня и освобождение машин — по Москве, как окно звонков
+time.tzset()
+
 import httpx
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
@@ -58,6 +61,11 @@ def migrate():
     if "status" not in cols:
         DB.execute("alter table trucks add column status text default 'free'")
         DB.execute("update trucks set status='busy' where free_from>?", (date.today().isoformat(),))
+    dcols = {r[1] for r in DB.execute("pragma table_info(dialogs)")}
+    if "draft" not in dcols:  # ответ агента при выключенной отправке
+        DB.execute("alter table dialogs add column draft text")
+    if "fails" not in dcols:  # подряд неудачные шаги агента — для повтора первого сообщения
+        DB.execute("alter table dialogs add column fails int default 0")
 
 
 migrate()
@@ -119,8 +127,15 @@ async def scan_truck(t):
         loads, total = await ati.search(t, page)
         for l in loads:
             seen += 1
-            s, verdict, reasons, m = score(l, t, rules, st)
+            try:
+                s, verdict, reasons, m = score(l, t, rules, st)
+            except Exception as e:  # необычный груз из выдачи — пропускаем его, а не весь проход
+                log(f"Груз {l.get('id')} пропущен: {type(e).__name__}: {e}", "error")
+                continue
             old = q("select truck_id, score, status from loads where id=?", l["id"])
+            if old and old[0]["status"] != "new":  # в работе: только освежаем объявление, машину не меняем
+                DB.execute("update loads set raw=?, updated=? where id=?", (json.dumps(l, ensure_ascii=False), time.time(), l["id"]))
+                continue
             if old and old[0]["truck_id"] != t["id"] and old[0]["score"] >= s:
                 continue  # для этого груза уже есть машина получше
             DB.execute("""insert into loads(id,truck_id,raw,score,verdict,reasons,metrics,first_seen,updated)
@@ -146,16 +161,23 @@ def rescore():
 
 async def monitor():
     while True:
-        for tid in fleet.release_due(DB):
-            log(f"Машина #{tid} освободилась по дате — снова ищем грузы")
-        where, args = fleet.scan_filter()
-        for t in q(f"select * from trucks where {where}", *args):
-            try:
-                await scan_truck(t)
-            except Exception as e:
-                log(f"Ошибка поиска ({t['name']}): {e}", "error")
-        await auto_start()
-        await asyncio.sleep(settings()["scan_minutes"] * 60)
+        try:
+            for tid in fleet.release_due(DB):
+                log(f"Машина #{tid} освободилась по дате — снова ищем грузы")
+            where, args = fleet.scan_filter()
+            for t in q(f"select * from trucks where {where}", *args):
+                try:
+                    await scan_truck(t)
+                except Exception as e:
+                    log(f"Ошибка поиска ({t['name']}): {e}", "error")
+            await auto_start()
+        except Exception as e:  # ошибка одного прохода не должна останавливать поиск навсегда
+            log(f"Ошибка мониторинга: {e}", "error")
+        try:
+            pause = max(60, int(settings()["scan_minutes"]) * 60)
+        except Exception:
+            pause = 300
+        await asyncio.sleep(pause)
 
 
 # ---------- переговоры ----------
@@ -171,12 +193,21 @@ def spawn(coro):
     t.add_done_callback(TASKS.discard)
 
 
+STEPPING = set()  # диалоги, по которым агент сейчас думает: второй шаг параллельно = два ответа заказчику
+
+
 async def agent_step(d):
+    if d["id"] in STEPPING:
+        return
+    STEPPING.add(d["id"])
     try:
         await _agent_step(d)
     except Exception as e:
-        DB.execute("update dialogs set status='waiting', summary=? where id=?", (f"Ошибка: {e}", d["id"]))
+        DB.execute("update dialogs set status='waiting', summary=?, fails=coalesce(fails,0)+1 where id=? and status='writing'",
+                   (f"Ошибка: {e}", d["id"]))
         log(f"Ошибка агента в диалоге #{d['id']}: {e}", "error")
+    finally:
+        STEPPING.discard(d["id"])
 
 
 async def _agent_step(d):
@@ -184,11 +215,14 @@ async def _agent_step(d):
     chat = [{"mine": bool(x["mine"]), "text": f"[РАСШИФРОВКА ЗВОНКА] {x['text']}" if x.get("kind") == "call" else x["text"]}
             for x in q("select * from messages where dialog_id=? order by ts", d["id"])]
     notes = "; ".join(r["text"] for r in q("select text from rules where active=1"))
-    DB.execute("update dialogs set status='writing', updated=? where id=?", (time.time(), d["id"]))
+    if not DB.execute("update dialogs set status='writing', updated=? where id=? and status in ('writing','waiting','ready')",
+                      (time.time(), d["id"])).rowcount:
+        return  # логист уже закрыл диалог («Берём»/«Отказ») — не воскрешаем
     try:
         res = await agent.negotiate(load, m, t, d["goal"], chat, notes, ME.get("name", "логист"))
     except Exception as e:
-        DB.execute("update dialogs set status='waiting', summary=? where id=?", (f"Ошибка агента: {e}", d["id"]))
+        DB.execute("update dialogs set status='waiting', summary=?, fails=coalesce(fails,0)+1 where id=? and status='writing'",
+                   (f"Ошибка агента: {e}", d["id"]))
         log(f"Агент не ответил по #{load.get('loadNumber')}: {e}", "error")
         return
     now = q("select status from dialogs where id=?", d["id"])[0]["status"]
@@ -196,13 +230,19 @@ async def _agent_step(d):
         DB.execute("update dialogs set summary=?, facts=?, updated=? where id=?",
                    (res["summary"], json.dumps(res["facts"], ensure_ascii=False), time.time(), d["id"]))
         return
-    if res["reply"] and settings()["send_enabled"] and d["chat_id"]:
+    if res["reply"] and d["chat_id"] and settings()["send_enabled"]:
         msg = await ati.send(d["chat_id"], res["reply"])
         DB.execute("insert or ignore into messages(id,dialog_id,mine,text,ts) values(?,?,?,?,?)", (msg["id"], d["id"], 1, res["reply"], msg["ts"]))
-        DB.execute("update dialogs set last_ts=max(last_ts,?) where id=?", (msg["ts"], d["id"]))
+        DB.execute("update dialogs set last_ts=max(last_ts,?), draft=null where id=?", (msg["ts"], d["id"]))
         log(f"Агент → #{load.get('loadNumber')}: {res['reply']}", "agent")
-    DB.execute("update dialogs set status=?, summary=?, facts=?, updated=? where id=?",
-               (res["status"], res["summary"], json.dumps(res["facts"], ensure_ascii=False), time.time(), d["id"]))
+    elif res["reply"] and d["chat_id"]:  # отправка выключена — черновик, логист отправит или поправит сам
+        DB.execute("update dialogs set draft=? where id=?", (res["reply"], d["id"]))
+        log(f"Черновик агента для #{load.get('loadNumber')} ждёт логиста", "agent")
+    if not DB.execute("update dialogs set status=?, summary=?, facts=?, updated=?, fails=0 where id=? and status='writing'",
+                      (res["status"], res["summary"], json.dumps(res["facts"], ensure_ascii=False), time.time(), d["id"])).rowcount:
+        DB.execute("update dialogs set summary=?, facts=? where id=?",  # закрыли, пока отправляли: решение логиста главнее
+                   (res["summary"], json.dumps(res["facts"], ensure_ascii=False), d["id"]))
+        return
     if res["status"] == "ready":
         DB.execute("update loads set status='ready' where id=?", (d["load_id"],))
         log(f"Готово для логиста: #{load.get('loadNumber')} — {res['summary']}", "ready")
@@ -218,15 +258,33 @@ def dnc_from_dialog(d, reason):
         log(f"{phone}: {reason} — номер в стоп-листе", "info")
 
 
+def is_mine(user):
+    """Сообщение от нашей фирмы (агент или логист с сайта АТИ). Формат user: «код фирмы» или «код.контакт»."""
+    me = str(ME.get("ati_id") or "")
+    return bool(me) and str(user or "").split(".")[0] == me
+
+
+FIRST_RETRY_SEC, FIRST_RETRIES = 300, 3  # первое сообщение не ушло (модель/АТИ) — повторяем, а не бросаем диалог
+
+
 async def poll_dialogs():
     while True:
+        if not ME:
+            try:
+                ME.update(await ati.me())
+            except Exception:
+                pass
+        for d in q("select d.* from dialogs d where d.status='waiting' and d.auto=1 and d.chat_id is not null and coalesce(d.fails,0) between 1 and ?"
+                   " and d.updated<? and not exists(select 1 from messages m where m.dialog_id=d.id)", FIRST_RETRIES, time.time() - FIRST_RETRY_SEC):
+            log(f"Повторяем первое сообщение в диалоге #{d['id']}", "agent")
+            await agent_step(d)
         for d in q("select * from dialogs where status in ('waiting','ready') and chat_id is not null"):
             try:
                 new = [x for x in await ati.history(d["chat_id"], d["last_ts"] or None)
                        if x.get("text") and not x.get("event") and x["ts"] > d["last_ts"]]
                 incoming = False
                 for x in sorted(new, key=lambda x: x["ts"]):
-                    mine = str(x.get("user", "")).startswith(ME.get("ati_id", "~"))
+                    mine = is_mine(x.get("user"))
                     DB.execute("insert or ignore into messages(id,dialog_id,mine,text,ts) values(?,?,?,?,?)", (x["id"], d["id"], int(mine), x["text"], x["ts"]))
                     DB.execute("update dialogs set last_ts=max(last_ts,?) where id=?", (x["ts"], d["id"]))
                     incoming |= not mine
@@ -234,8 +292,9 @@ async def poll_dialogs():
                         dnc_from_dialog(d, "написали в чате АТИ: не звонить")
                 if incoming:
                     log(f"Заказчик ответил в диалоге #{d['id']}", "reply")
-                    if d["auto"] and d["status"] == "waiting":
-                        await agent_step(q("select * from dialogs where id=?", d["id"])[0])
+                    fresh = q("select * from dialogs where id=?", d["id"])[0]  # логист мог закрыть или выключить агента
+                    if fresh["auto"] and fresh["status"] == "waiting":
+                        await agent_step(fresh)
             except Exception as e:
                 log(f"Ошибка чтения диалога #{d['id']}: {e}", "error")
         await asyncio.sleep(15)
@@ -531,13 +590,15 @@ async def patch_user(uid: int, b: UserPatch):
         raise HTTPException(400, "Нельзя убрать последнего владельца")
     if b.role:
         auth.check_role(b.role)
+    if b.password:
+        auth.check_password(b.password)
+    if b.role:
         DB.execute("update users set role=? where id=?", (b.role, uid))
     if b.active is not None:
         DB.execute("update users set active=? where id=?", (int(b.active), uid))
         if not b.active:
             auth.drop_sessions(DB, uid)
     if b.password:
-        auth.check_password(b.password)
         DB.execute("update users set password_hash=? where id=?", (auth.PH.hash(b.password), uid))
         auth.drop_sessions(DB, uid)
     auth.record(DB, "user_edit", uid, json.dumps({k: v for k, v in b.model_dump().items() if v is not None and k != "password"}
@@ -557,12 +618,17 @@ def load_row(r):
             "reasons": json.loads(r["reasons"]), "metrics": json.loads(r["metrics"]), "raw": raw}
 
 
+LIST_TTL = 24 * 3600  # в списке — то, что биржа показывала за сутки; старое объявление скорее всего ушло
+RELEVANT_NOW = "verdict='relevant' and status='new' and updated>=?"
+
+
 @app.get("/api/stats")
 async def stats():
     day = datetime.combine(date.today(), datetime.min.time()).timestamp()
     seen = q("select count(*) n, sum(case when verdict='relevant' then 1 else 0 end) rel from loads where first_seen>=?", day)[0]
     scans = q("select count(*) n, coalesce(sum(seen),0) s from scans where ts>=?", day)[0]
-    return {"seen": seen["n"], "relevant": seen["rel"] or 0, "filtered": seen["n"] - (seen["rel"] or 0),
+    relevant = q(f"select count(*) n from loads where {RELEVANT_NOW}", time.time() - LIST_TTL)[0]["n"]  # как список «Подходят»
+    return {"seen": seen["n"], "relevant": relevant, "filtered": seen["n"] - (seen["rel"] or 0),
             "views": scans["s"], "scans": scans["n"],
             "dialogs": q("select count(*) n from dialogs where status in ('writing','waiting')")[0]["n"],
             "ready": q("select count(*) n from dialogs where status='ready'")[0]["n"],
@@ -573,12 +639,13 @@ async def stats():
 
 @app.get("/api/loads")
 async def loads(view: str = "relevant", truck: int | None = None, limit: int = Query(200, ge=1, le=1000)):
-    where = {"relevant": "verdict='relevant' and status='new'", "filtered": "verdict='filtered' and status='new'",
+    where = {"relevant": f"{RELEVANT_NOW}", "filtered": "verdict='filtered' and status='new' and updated>=?",
              "rejected": "status='rejected'", "all": "1=1"}.get(view, "1=1")
+    args = [time.time() - LIST_TTL] if view in ("relevant", "filtered") else []
     if truck:
         where += f" and truck_id={int(truck)}"
     order = "score desc, updated desc" if view == "relevant" else "updated desc"
-    return [load_row(r) for r in q(f"select * from loads where {where} order by {order} limit ?", limit)]
+    return [load_row(r) for r in q(f"select * from loads where {where} order by {order} limit ?", *args, limit)]
 
 
 class Reason(BaseModel):
@@ -596,7 +663,11 @@ async def reject(lid: str, b: Reason):
     log(f"{who}: отказ по грузу — {b.reason or 'без причины'}")
     rule = None
     if b.learn and b.reason.strip():
-        rule = await add_rule_from_text(b.reason, json.loads(l[0]["raw"]), json.loads(l[0]["metrics"]), lid)
+        try:
+            rule = await add_rule_from_text(b.reason, json.loads(l[0]["raw"]), json.loads(l[0]["metrics"]), lid)
+        except Exception as e:  # отказ уже записан; правило можно добавить позже на странице «База знаний»
+            log(f"Правило из причины отказа не создано: {e}", "error")
+            return {"rule": None, "error": f"Отказ сохранён, но правило не создано: {e}"}
         auth.record(DB, "rule_add", rule["id"], rule["text"])
     return {"rule": rule}
 
@@ -627,6 +698,8 @@ async def start_agent(lid: str, b: Goal):
 
 
 async def start_dialog(l, goal, by_agent=False):
+    if q("select 1 from dialogs where load_id=? and status in ('writing','waiting','ready')", l["id"]):
+        raise ValueError("По этому грузу агент уже ведёт переговоры")
     raw = json.loads(l["raw"])
     firm = raw.get("firm") or {}
     if not firm.get("contacts"):
@@ -653,19 +726,33 @@ async def start_dialog(l, goal, by_agent=False):
     return d
 
 
+AUTO_LOCK = asyncio.Lock()
+FRESH_SCANS = 3  # груз, который биржа не показывала дольше 3 проходов, считаем ушедшим
+
+
+def fresh_edge(st=None):
+    st = st or settings()
+    return time.time() - FRESH_SCANS * max(60, int(st["scan_minutes"]) * 60)
+
+
 async def auto_start():
+    async with AUTO_LOCK:  # фон и кнопка «Взять сейчас» не должны взять один груз дважды
+        await _auto_start()
+
+
+async def _auto_start():
     """Агент сам берёт лучшие свежие грузы и начинает переписку."""
     st = settings()
     if not (st["auto_start"] and st["send_enabled"]):
         return
     day = datetime.combine(date.today(), datetime.min.time()).timestamp()
     left = st["auto_daily"] - q("select count(*) n from dialogs where created>=?", day)[0]["n"]
-    busy_firms = {json.loads(r["raw"]).get("firm", {}).get("id") for r in
+    busy_firms = {(json.loads(r["raw"]).get("firm") or {}).get("id") for r in
                   q("select l.raw from dialogs d join loads l on l.id=d.load_id where d.status in ('writing','waiting','ready')")}
     started = 0
     where, args = fleet.scan_filter(alias="t")
     for l in q(f"select l.* from loads l join trucks t on t.id=l.truck_id where l.verdict='relevant' and l.status='new'"
-               f" and l.score>=? and {where} order by l.score desc, l.updated desc", st["auto_score"], *args):
+               f" and l.score>=? and l.updated>=? and {where} order by l.score desc, l.updated desc", st["auto_score"], fresh_edge(st), *args):
         if started >= min(st["auto_per_cycle"], left):
             break
         firm = json.loads(l["raw"]).get("firm") or {}
@@ -682,9 +769,18 @@ async def auto_start():
 
 @app.post("/api/agent/run")
 async def agent_run():
+    st = settings()
+    if not st["send_enabled"]:
+        return {"started": 0, "reason": "Отправка сообщений выключена в настройках — агент только готовит черновики"}
+    if not st["auto_start"]:
+        return {"started": 0, "reason": "«Агент сам берёт лучшие грузы» выключено в настройках"}
+    day = datetime.combine(date.today(), datetime.min.time()).timestamp()
+    if q("select count(*) n from dialogs where created>=?", day)[0]["n"] >= st["auto_daily"]:
+        return {"started": 0, "reason": f"Дневной лимит новых диалогов ({st['auto_daily']}) исчерпан"}
     before = q("select count(*) n from dialogs")[0]["n"]
     await auto_start()
-    return {"started": q("select count(*) n from dialogs")[0]["n"] - before}
+    n = q("select count(*) n from dialogs")[0]["n"] - before
+    return {"started": n, "reason": None if n else f"Нет свежих грузов с оценкой от {st['auto_score']} и открытым заказчиком"}
 
 
 @app.get("/api/dialogs")
@@ -714,7 +810,7 @@ async def send_manual(did: int, b: Text):
         raise HTTPException(400, "Чата с заказчиком нет — только звонок")
     msg = await ati.send(d["chat_id"], b.text)
     DB.execute("insert or ignore into messages(id,dialog_id,mine,text,ts) values(?,?,?,?,?)", (msg["id"], did, 1, b.text, msg["ts"]))
-    DB.execute("update dialogs set last_ts=max(last_ts,?), updated=? where id=?", (msg["ts"], time.time(), did))
+    DB.execute("update dialogs set last_ts=max(last_ts,?), updated=?, draft=null where id=?", (msg["ts"], time.time(), did))
     auth.record(DB, "message_send", did, b.text[:500])
     return {"ok": True}
 
@@ -858,11 +954,11 @@ class Truck(BaseModel):
     name: str
     driver: str = ""
     city_name: str
-    radius: int = 150
-    body_mask: int = 1
+    radius: int = Field(150, ge=10, le=2000)
+    body_mask: int = Field(1, ge=1)
     body_name: str = "тент"
-    height: float = 2.7
-    capacity: float = 20
+    height: float = Field(2.7, gt=0, le=5)
+    capacity: float = Field(20, gt=0, le=60)
     free_from: date
     active: bool = True
     status: str = "free"
@@ -993,7 +1089,7 @@ async def get_settings():
     u = auth.current()
     if u and u["role"] != "owner":  # логист настроек не видит — только цель агента для запуска диалога
         s = settings()
-        return {"default_goal": s["default_goal"], "goal_presets": s["goal_presets"]}
+        return {k: s[k] for k in ("default_goal", "goal_presets", "send_enabled", "call_enabled")}
     return settings()
 
 
@@ -1002,10 +1098,26 @@ async def costs():
     return costs_today()
 
 
+# пустое поле на форме не должно превращаться в 0 (радиус 0, звонок сразу, 0 страниц)
+NUM_RANGES = {"vat": (0, 30), "min_rate_km": (1, 1000), "threshold": (0, 100), "scan_minutes": (1, 1440), "pages": (1, 20),
+              "auto_score": (0, 100), "auto_per_cycle": (1, 50), "auto_daily": (0, 500),
+              "call_after_min": (1, 1440), "call_daily": (0, 1000)}
+
+
 @app.put("/api/settings", dependencies=[Depends(auth.require_owner)])
 async def put_settings(b: dict):
     if "call_hours" in b and not calls.valid_hours(b["call_hours"]):
         raise HTTPException(400, "Окно звонков — в виде 09:00-19:00")
+    for k, (lo, hi) in NUM_RANGES.items():
+        if k in b:
+            v = b[k]
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
+                raise HTTPException(400, f"«{k}»: число от {lo} до {hi}")
+            if isinstance(DEFAULTS[k], int):
+                b[k] = int(v)
+    for k in ("send_enabled", "auto_start", "call_enabled"):
+        if k in b and not isinstance(b[k], bool):
+            raise HTTPException(400, f"«{k}»: да/нет")
     if "goal_presets" in b:
         g = b["goal_presets"]
         if not isinstance(g, list) or not all(isinstance(x, str) for x in g):

@@ -138,7 +138,7 @@ def test_spa_static_no_traversal(anon):
 def test_goal_presets(make_client):
     owner, lg = make_client("owner"), make_client("logist", "olga")
     got = lg.get("/api/settings").json()
-    assert set(got) == {"default_goal", "goal_presets"} and len(got["goal_presets"]) == 3  # логисту — только сценарии
+    assert set(got) == {"default_goal", "goal_presets", "send_enabled", "call_enabled"} and len(got["goal_presets"]) == 3  # логисту — только сценарии
     r = owner.put("/api/settings", json={"goal_presets": ["  Узнать ставку  ", "", "Нужна ли доверенность"]})
     assert r.status_code == 200 and r.json()["goal_presets"] == ["Узнать ставку", "Нужна ли доверенность"]
     assert lg.get("/api/settings").json()["goal_presets"] == ["Узнать ставку", "Нужна ли доверенность"]

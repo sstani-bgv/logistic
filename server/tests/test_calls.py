@@ -275,8 +275,20 @@ def test_failed_before_telephony_not_counted():
     did = mk_dialog()
     for _ in range(3):
         main.DB.execute("insert into calls(dialog_id,phone,status,created) values(?,?,?,?)",
-                        (did, "+79215551234", "failed", time.time()))
-    assert calls.blocked_reason(main.DB, ST, "+79215551234", did) is None
+                        (did, "+79215551234", "failed", time.time() - 3600))
+    assert calls.blocked_reason(main.DB, ST, "+79215551234", did) is None  # в лимиты не идут
+
+
+def test_telephony_glitch_does_not_redial_every_minute():
+    did = mk_dialog()
+    main.DB.execute("insert into calls(dialog_id,phone,status,created,error) values(?,?,?,?,?)",
+                    (did, "+79215551234", "failed", time.time() - 60, "телефония не вернула id звонка"))
+    assert "повтор позже" in calls.blocked_reason(main.DB, ST, "+79215551234", did)
+    assert calls.blocked_reason(main.DB, ST, "+79215551234", did, manual=True) is None  # логист может сам
+    for i in range(3):
+        main.DB.execute("insert into calls(dialog_id,phone,status,created) values(?,?,?,?)",
+                        (did, "+79215551234", "failed", time.time() - 7200 - i))
+    assert "слишком много" in calls.blocked_reason(main.DB, ST, "+79215551234", did, time.time() + 3600)
 
 
 def test_telephony_error_is_reported(make_client, monkeypatch):
@@ -332,7 +344,7 @@ def test_recording_url_allowlist(monkeypatch):
 
 def test_logist_sees_only_goal(make_client):
     lg, ow = make_client("logist"), make_client("owner")
-    assert set(lg.get("/api/settings").json()) == {"default_goal", "goal_presets"}
+    assert set(lg.get("/api/settings").json()) == {"default_goal", "goal_presets", "send_enabled", "call_enabled"}
     assert "call_daily" in ow.get("/api/settings").json()
     assert lg.get("/api/costs").status_code == 403 and ow.get("/api/costs").status_code == 200
 
@@ -347,6 +359,9 @@ def test_no_chat_but_phone_creates_call_dialog(monkeypatch):
     d = asyncio.run(main.start_dialog(main.q("select * from loads where id='N1'")[0], "цель"))
     assert d["chat_id"] is None and d["status"] == "waiting"
     assert [x["id"] for x in calls.due_dialogs(main.DB, ST)] == [d["id"]]  # звонить сразу, без ожидания чата
+    with pytest.raises(ValueError, match="уже ведёт"):  # второй диалог по тому же грузу не открываем
+        asyncio.run(main.start_dialog(main.q("select * from loads where id='N1'")[0], "цель"))
+    main.DB.execute("update dialogs set status='declined'")
     raw["firm"]["contacts"][0]["phones"] = []
     main.DB.execute("update loads set raw=?, status='new' where id='N1'", (json.dumps(raw),))
     with pytest.raises(ValueError, match="телефона нет"):

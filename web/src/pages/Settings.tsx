@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
-import { Save, Trash2 } from "lucide-react"
+import { Plus, Save, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { api, ago, errText, usePoll, type Settings } from "@/lib/api"
 
-type Field = { k: string; label: string; hint?: string; type: "number" | "bool" | "text" | "long" }
+type Field = { k: string; label: string; hint?: string; type: "number" | "bool" | "text" | "long" | "list" }
 const GROUPS: { title: string; fields: Field[] }[] = [
   { title: "Отбор грузов", fields: [
     { k: "min_rate_km", label: "Минимум ₽/км чистыми", type: "number" },
@@ -23,7 +23,8 @@ const GROUPS: { title: string; fields: Field[] }[] = [
     { k: "auto_score", label: "С какой оценки берёт сам", type: "number" },
     { k: "auto_per_cycle", label: "Новых диалогов за проход", type: "number" },
     { k: "auto_daily", label: "Новых диалогов в день", type: "number" },
-    { k: "default_goal", label: "Цель переговоров по умолчанию", type: "long" },
+    { k: "default_goal", label: "Сценарий по умолчанию", hint: "подставляется в окне «Поручить агенту»", type: "long" },
+    { k: "goal_presets", label: "Готовые сценарии", hint: "кнопки в окне «Поручить агенту»: логист выбирает, что узнать", type: "list" },
   ] },
   { title: "Звонки", fields: [
     { k: "call_enabled", label: "Агент звонит", type: "bool" },
@@ -68,9 +69,11 @@ export default function SettingsPage() {
                   {f.hint && <span className="text-xs text-muted-foreground">{f.hint}</span>}
                 </div>
               )
+              if (f.type === "list") return <ListField key={f.k} f={f} value={(s[f.k] as string[]) ?? []} onChange={(v) => set(f.k, v)} />
               if (f.type === "long") return (
                 <div key={f.k} className="flex flex-col gap-1.5 sm:col-span-2">
                   <Label htmlFor={id}>{f.label}</Label>
+                  {f.hint && <span className="text-xs text-muted-foreground">{f.hint}</span>}
                   <Textarea id={id} rows={4} value={String(s[f.k] ?? "")} onChange={(e) => set(f.k, e.target.value)} />
                 </div>
               )
@@ -86,6 +89,26 @@ export default function SettingsPage() {
         </section>
       ))}
       <DncList />
+    </div>
+  )
+}
+
+function ListField({ f, value, onChange }: { f: Field; value: string[]; onChange: (v: string[]) => void }) {
+  const put = (i: number, v: string) => onChange(value.map((x, j) => (j === i ? v : x)))
+  return (
+    <div className="flex flex-col gap-1.5 sm:col-span-2">
+      <Label>{f.label}</Label>
+      {f.hint && <span className="text-xs text-muted-foreground">{f.hint}</span>}
+      {value.map((x, i) => (
+        <div key={i} className="flex items-start gap-2">
+          <Textarea rows={2} aria-label={`${f.label} ${i + 1}`} value={x} onChange={(e) => put(i, e.target.value)} />
+          <Button size="icon" variant="ghost" className="size-8 shrink-0" aria-label={`Удалить сценарий ${i + 1}`}
+            onClick={() => onChange(value.filter((_, j) => j !== i))}><X /></Button>
+        </div>
+      ))}
+      <Button variant="outline" size="sm" className="self-start" disabled={value.length >= 20} onClick={() => onChange([...value, ""])}>
+        <Plus />Добавить сценарий
+      </Button>
     </div>
   )
 }

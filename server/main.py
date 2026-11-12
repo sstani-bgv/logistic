@@ -67,7 +67,11 @@ DEFAULTS = {"vat": 22, "min_rate_km": 55, "threshold": 55, "scan_minutes": 5, "p
             "default_goal": "Узнать то, чего нет в объявлении и что нужно для решения: актуален ли груз; если ставка «запрос» — "
                             "какую ставку и форму оплаты дают; точный адрес и время погрузки; особые требования (доверенность, "
                             "ремни, растентовка). Первое сообщение — 1–2 коротких вопроса, без торга. Если ставка ниже 55 ₽/км "
-                            "чистыми — потом вежливо попробовать поднять."}
+                            "чистыми — потом вежливо попробовать поднять.",
+            # готовые сценарии — кнопки в окне «Поручить агенту»; правит владелец в Настройках
+            "goal_presets": ["Узнать, актуален ли груз и можно ли поднять ставку до 60 ₽/км",
+                             "Уточнить точный адрес, время погрузки и нужна ли доверенность",
+                             "Предложить нашу машину и спросить про обратную загрузку"]}
 DEFAULTS.update(calls.DEFAULTS)
 
 # Парк для демо (DEMO_SEED=1): города/кузова — пример, правится на странице «Машины». На проде не вставляется.
@@ -988,7 +992,8 @@ async def del_rule(rid: int):
 async def get_settings():
     u = auth.current()
     if u and u["role"] != "owner":  # логист настроек не видит — только цель агента для запуска диалога
-        return {"default_goal": settings()["default_goal"]}
+        s = settings()
+        return {"default_goal": s["default_goal"], "goal_presets": s["goal_presets"]}
     return settings()
 
 
@@ -1001,6 +1006,16 @@ async def costs():
 async def put_settings(b: dict):
     if "call_hours" in b and not calls.valid_hours(b["call_hours"]):
         raise HTTPException(400, "Окно звонков — в виде 09:00-19:00")
+    if "goal_presets" in b:
+        g = b["goal_presets"]
+        if not isinstance(g, list) or not all(isinstance(x, str) for x in g):
+            raise HTTPException(400, "Сценарии — список строк")
+        g = [x.strip() for x in g if x.strip()]
+        if len(g) > 20 or any(len(x) > 1000 for x in g):
+            raise HTTPException(400, "Сценариев не больше 20, каждый до 1000 символов")
+        b["goal_presets"] = g
+    if "default_goal" in b and not str(b["default_goal"] or "").strip():
+        raise HTTPException(400, "Сценарий по умолчанию не может быть пустым")
     for k, v in b.items():
         if k in DEFAULTS:
             DB.execute("insert into kv values(?,?) on conflict(k) do update set v=excluded.v", (k, json.dumps(v)))

@@ -46,7 +46,7 @@ export type User = { id: number; login: string; role: Role; active: number }
 export type Action = { id: number; ts: number; user_id: number | null; login: string; action: string; ref: string | null; detail: string | null }
 export type Settings = {
   vat: number; min_rate_km: number; threshold: number; scan_minutes: number; pages: number; send_enabled: boolean
-  auto_start: boolean; auto_score: number; auto_per_cycle: number; auto_daily: number; default_goal: string
+  auto_start: boolean; auto_score: number; auto_per_cycle: number; auto_daily: number; default_goal: string; goal_presets: string[]
   [k: string]: unknown
 }
 

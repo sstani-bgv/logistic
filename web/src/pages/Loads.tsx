@@ -169,7 +169,7 @@ function RejectDialog({ load, onClose, onDone }: { load: Load | null; onClose: (
 }
 
 function DelegateDialog({ load, onClose, onDone }: { load: Load | null; onClose: () => void; onDone: () => void }) {
-  const { data: st } = usePoll<{ default_goal: string }>("/settings", 60000)
+  const { data: st } = usePoll<{ default_goal: string; goal_presets?: string[] }>("/settings", 60000)
   const [goal, setGoal] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const contact = load?.raw.firm?.contacts?.[0]
@@ -194,7 +194,7 @@ function DelegateDialog({ load, onClose, onDone }: { load: Load | null; onClose:
         <Label htmlFor="goal">Сценарий: что узнать</Label>
         <Textarea id="goal" rows={4} value={goal ?? st?.default_goal ?? ""} onChange={(e) => setGoal(e.target.value)} />
         <div className="flex flex-wrap gap-1.5">
-          {["Узнать, актуален ли груз и можно ли поднять ставку до 60 ₽/км", "Уточнить точный адрес, время погрузки и нужна ли доверенность", "Предложить нашу машину и спросить про обратную загрузку"].map((s) => (
+          {(st?.goal_presets ?? []).map((s) => (
             <button key={s} onClick={() => setGoal(s)} className="rounded-full border px-2.5 py-1 text-xs text-muted-foreground hover:bg-muted">{s}</button>
           ))}
         </div>

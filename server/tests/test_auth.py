@@ -133,3 +133,16 @@ def test_spa_static_no_traversal(anon):
     assert anon.get("/vite.svg").headers["content-type"].startswith("image/svg")
     r = anon.get("/..%2F..%2Fserver%2Fmain.py")
     assert "import" not in r.text
+
+
+def test_goal_presets(make_client):
+    owner, lg = make_client("owner"), make_client("logist", "olga")
+    got = lg.get("/api/settings").json()
+    assert set(got) == {"default_goal", "goal_presets"} and len(got["goal_presets"]) == 3  # логисту — только сценарии
+    r = owner.put("/api/settings", json={"goal_presets": ["  Узнать ставку  ", "", "Нужна ли доверенность"]})
+    assert r.status_code == 200 and r.json()["goal_presets"] == ["Узнать ставку", "Нужна ли доверенность"]
+    assert lg.get("/api/settings").json()["goal_presets"] == ["Узнать ставку", "Нужна ли доверенность"]
+    assert lg.put("/api/settings", json={"goal_presets": []}).status_code == 403
+    for bad in ("строка", [1, 2], ["x" * 1001], ["a"] * 21):
+        assert owner.put("/api/settings", json={"goal_presets": bad}).status_code == 400, bad
+    assert owner.put("/api/settings", json={"default_goal": "  "}).status_code == 400

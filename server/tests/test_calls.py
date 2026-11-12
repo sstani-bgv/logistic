@@ -332,7 +332,7 @@ def test_recording_url_allowlist(monkeypatch):
 
 def test_logist_sees_only_goal(make_client):
     lg, ow = make_client("logist"), make_client("owner")
-    assert set(lg.get("/api/settings").json()) == {"default_goal"}
+    assert set(lg.get("/api/settings").json()) == {"default_goal", "goal_presets"}
     assert "call_daily" in ow.get("/api/settings").json()
     assert lg.get("/api/costs").status_code == 403 and ow.get("/api/costs").status_code == 200
 

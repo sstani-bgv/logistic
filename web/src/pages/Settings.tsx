@@ -149,7 +149,7 @@ function DncList() {
   )
 }
 
-type CostsT = { llm_requests: number; llm_tokens: number; llm_rub: number; calls: number; call_minutes: number; calls_rub: number }
+type CostsT = { llm_requests: number; llm_tokens: number; llm_rub: number; calls: number; call_minutes: number; calls_rub: number; voice_tests?: number; voice_rub?: number }
 
 function Costs() {
   const { data: c } = usePoll<CostsT>("/costs", 60000)
@@ -158,6 +158,7 @@ function Costs() {
     <p className="mt-1 text-sm">
       Сегодня: модель — <span className="num font-medium">{c.llm_rub} ₽</span> ({c.llm_requests} запросов, {c.llm_tokens.toLocaleString("ru-RU")} токенов),
       звонки — <span className="num font-medium">{c.calls_rub} ₽</span> ({c.calls} шт., {c.call_minutes} мин)
+      {!!c.voice_tests && <>, тестовые голосовые — <span className="num font-medium">≈{c.voice_rub} ₽</span> ({c.voice_tests} шт.)</>}
     </p>
   )
 }

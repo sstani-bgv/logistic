@@ -10,7 +10,8 @@ from contextvars import ContextVar
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
-from fastapi import HTTPException, Request
+from fastapi import HTTPException
+from starlette.requests import HTTPConnection
 
 ROLES = ("owner", "logist")
 COOKIE = "session"
@@ -24,7 +25,7 @@ PH = PasswordHasher()
 DUMMY_HASH = PH.hash("timing-equalizer")  # для несуществующего логина тоже считаем argon2 — не выдаём, есть ли логин
 CURRENT: ContextVar[dict | None] = ContextVar("current_user", default=None)
 PUBLIC = {"/api/login", "/api/logout", "/api/health"}
-PUBLIC_PREFIX = ("/api/telephony/",)  # вебхуки ВАТС и голосового бота — со своим секретом в пути
+PUBLIC_PREFIX = ("/api/telephony/", "/api/voice/")  # вебхуки ВАТС — секрет в пути; голос — свой вход в обработчике (WebSocket)
 FAILS: dict[str, list[float]] = {}
 
 SCHEMA = """
@@ -136,7 +137,7 @@ def set_cookie(resp, token):
 
 
 def make_guard(db):
-    async def guard(request: Request):
+    async def guard(request: HTTPConnection):  # и HTTP, и WebSocket
         """Зависимость на всё приложение: /api/* только после входа (кроме PUBLIC)."""
         path = request.url.path
         if not path.startswith("/api/") or path in PUBLIC or path.startswith(PUBLIC_PREFIX):

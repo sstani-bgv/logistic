@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { api, ask, usePoll, rub, ago, ddmm, errText, type Call, type Dialog, type DialogPatchResult } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import VoiceTest from "@/components/VoiceTest"
 
 const COLS = [
   { id: "writing", label: "Агент пишет", tone: "bg-primary" },
@@ -20,6 +21,7 @@ const FACTS: Record<string, string> = { actual: "Актуальность", pric
 
 export default function DialogsPage() {
   const { data, reload, offline } = usePoll<Dialog[]>("/dialogs", 4000)
+  const { data: st } = usePoll<{ voice_ready?: boolean }>("/settings", 60000)
   const [openId, setOpenId] = useState<number | null>(null)
   const open = data?.find((d) => d.id === openId) ?? null
   const [running, setRunning] = useState(false)
@@ -70,12 +72,12 @@ export default function DialogsPage() {
           )
         })}
       </div>
-      <ChatSheet key={openId ?? 0} d={open} onClose={() => setOpenId(null)} onChange={reload} />
+      <ChatSheet key={openId ?? 0} d={open} voice={!!st?.voice_ready} onClose={() => setOpenId(null)} onChange={reload} />
     </div>
   )
 }
 
-function ChatSheet({ d, onClose, onChange }: { d: Dialog | null; onClose: () => void; onChange: () => void }) {
+function ChatSheet({ d, voice, onClose, onChange }: { d: Dialog | null; voice: boolean; onClose: () => void; onChange: () => void }) {
   const [text, setText] = useState("")
   const [busy, setBusy] = useState(false)
   const r = d?.load?.raw
@@ -119,7 +121,7 @@ function ChatSheet({ d, onClose, onChange }: { d: Dialog | null; onClose: () => 
           </SheetHeader>
           <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 border-b bg-muted/30 p-5 text-sm">
             {Object.entries(FACTS).map(([k, label]) => (
-              <div key={k} className="min-w-0"><div className="text-xs text-muted-foreground">{label}</div><div className={cn("break-words", !d.facts?.[k] && "text-muted-foreground")}>{d.facts?.[k] ?? "—"}</div></div>
+              <div key={k} className="min-w-0"><div className="text-xs text-muted-foreground">{label}</div><div title={d.facts?.[k] ?? undefined} className={cn("line-clamp-3 break-words", !d.facts?.[k] && "text-muted-foreground")}>{d.facts?.[k] ?? "—"}</div></div>
             ))}
           </div>
           <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto p-5">
@@ -153,6 +155,7 @@ function ChatSheet({ d, onClose, onChange }: { d: Dialog | null; onClose: () => 
             </div>
           )}
           <div className="flex flex-col gap-3 border-t p-4">
+            {voice && <VoiceTest dialogId={d.id} />}
             <div className="flex gap-2">
               <Input id="manual-msg" aria-label="Сообщение заказчику" value={text} disabled={!d.chat_id} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); send() } }} placeholder={d.chat_id ? "Написать вручную…" : "Чата с заказчиком нет — только звонок"} />
               <Button size="icon" onClick={() => send()} disabled={busy || !d.chat_id || !text.trim()} aria-label="Отправить"><Send /></Button>

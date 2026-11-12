@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -27,6 +27,8 @@ import auth
 import calls
 import fleet
 import telephony
+import voice
+from urllib.parse import urlparse
 from scoring import score
 
 ROOT = Path(__file__).parent
@@ -52,6 +54,7 @@ create table if not exists scans(ts real, truck_id int, seen int, total int);
 auth.init(DB)
 calls.init(DB)
 DB.execute("create table if not exists llm_usage(ts real, model text, prompt_tokens int, completion_tokens int, cost real)")
+DB.execute("create table if not exists voice_usage(ts real, dialog_id int, seconds real, cost real, login text, reason text)")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
 
@@ -478,8 +481,10 @@ def costs_today():
     u = q("select count(*) n, coalesce(sum(cost),0) rub, coalesce(sum(prompt_tokens+completion_tokens),0) tokens"
           " from llm_usage where ts>=?", day)[0]
     c = q("select count(*) n, coalesce(sum(cost),0) rub, coalesce(sum(duration),0) sec from calls where created>=?", day)[0]
+    v = q("select count(*) n, coalesce(sum(cost),0) rub from voice_usage where ts>=?", day)[0]
     return {"llm_requests": u["n"], "llm_tokens": u["tokens"], "llm_rub": round(u["rub"], 2),
-            "calls": c["n"], "call_minutes": round(c["sec"] / 60, 1), "calls_rub": round(c["rub"], 2)}
+            "calls": c["n"], "call_minutes": round(c["sec"] / 60, 1), "calls_rub": round(c["rub"], 2),
+            "voice_tests": v["n"], "voice_rub": round(v["rub"], 2)}
 
 
 async def reap_stale_calls():
@@ -815,6 +820,76 @@ async def send_manual(did: int, b: Text):
     return {"ok": True}
 
 
+# ---------- тестовый голосовой звонок: логист играет заказчика, агент говорит по сценарию диалога ----------
+VOICE_LIVE = set()
+VOICE_MAX_LIVE = 2
+VOICE_END = {"hangup": "Звонок завершён.", "limit": "Время тестового звонка вышло.",
+             "idle": "Звонок завершён: вас не слышно.", "error": "Связь с голосовой моделью прервалась."}
+
+
+@app.websocket("/api/voice/test/{did}")
+async def voice_test(ws: WebSocket, did: int):
+    u = auth.user_by_token(DB, ws.cookies.get(auth.COOKIE))
+    origin = ws.headers.get("origin")
+    if not u or (origin and urlparse(origin).netloc != ws.headers.get("host")):  # чужой сайт не позвонит от имени логиста
+        await ws.close(code=1008)
+        return
+    auth.CURRENT.set(u)
+    await ws.accept()
+
+    async def end(text, **extra):
+        try:
+            await ws.send_json({"type": "end", "text": text, **extra})
+            await ws.close()
+        except Exception:
+            pass
+
+    c = voice.cfg()
+    d = q("select * from dialogs where id=?", did)
+    if not c["ready"]:
+        return await end("Голос не настроен: в .env нужны YC_API_KEY и YC_FOLDER_ID.")
+    if not d:
+        return await end("Диалог не найден.")
+    spent = q("select coalesce(sum(cost),0) rub from voice_usage where ts>=?", calls.msk_day_start())[0]["rub"]
+    allow = min(c["call_sec"], int((c["rub_day"] - spent) / c["rub_sec"])) if c["rub_sec"] > 0 else c["call_sec"]
+    if allow < 30:
+        return await end(f"Дневной лимит на тестовые звонки ({c['rub_day']:g} ₽) исчерпан.")
+    if did in VOICE_LIVE or len(VOICE_LIVE) >= VOICE_MAX_LIVE:
+        return await end("Сейчас уже идёт тестовый звонок — попробуйте через минуту.")
+    load, m, t = dialog_ctx(d[0])
+    chat = [{"mine": bool(x["mine"]), "text": x["text"]} for x in q("select * from messages where dialog_id=? order by ts", did)]
+    notes = "; ".join(r["text"] for r in q("select text from rules where active=1"))
+    instructions = agent.call_instructions(load, m, t, d[0]["goal"], chat, notes, ME.get("name", "логист"))
+
+    async def recv():
+        try:
+            return json.loads(await ws.receive_text())
+        except WebSocketDisconnect:
+            return None
+        except ValueError:
+            return {}
+
+    async def send(ev):
+        try:
+            await ws.send_json(ev)
+        except Exception:
+            pass
+
+    VOICE_LIVE.add(did)
+    reason, turns, secs = "error", [], 0.0
+    try:
+        reason, turns, secs = await voice.talk(recv, send, instructions, {**c, "call_sec": allow})
+    except Exception as e:
+        log(f"Тестовый звонок по диалогу #{did} не запустился: {type(e).__name__}: {e}", "error")
+    finally:
+        VOICE_LIVE.discard(did)
+        rub = round(secs * c["rub_sec"], 2)
+        DB.execute("insert into voice_usage values(?,?,?,?,?,?)", (time.time(), did, secs, rub, u["login"], reason))
+        auth.record(DB, "voice_test", did, f"{secs:.0f} с, {rub} ₽, {reason}")
+    # расшифровку в переписку НЕ кладём: логист играл заказчика, это не слова настоящего заказчика
+    await end(VOICE_END.get(reason, "Звонок завершён."), transcript=voice.transcript(turns), seconds=round(secs), rub=rub)
+
+
 DIALOG_STATUSES = ("writing", "waiting", "ready", "declined", "taken")
 
 
@@ -1089,8 +1164,8 @@ async def get_settings():
     u = auth.current()
     if u and u["role"] != "owner":  # логист настроек не видит — только цель агента для запуска диалога
         s = settings()
-        return {k: s[k] for k in ("default_goal", "goal_presets", "send_enabled", "call_enabled")}
-    return settings()
+        return {**{k: s[k] for k in ("default_goal", "goal_presets", "send_enabled", "call_enabled")}, "voice_ready": voice.cfg()["ready"]}
+    return {**settings(), "voice_ready": voice.cfg()["ready"]}
 
 
 @app.get("/api/costs", dependencies=[Depends(auth.require_owner)])

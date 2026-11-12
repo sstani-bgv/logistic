@@ -1337,7 +1337,11 @@ async def rules():
 
 @app.post("/api/rules")
 async def add_rule(b: Text):
-    r = await add_rule_from_text(b.text)
+    try:
+        r = await add_rule_from_text(b.text)
+    except llm.LLMError as e:  # модель недоступна — говорим об этом, а не «Ошибка 500»
+        mark("llm", False, e)
+        raise HTTPException(503, f"Модель не ответила, правило не добавлено: {e}") from e
     auth.record(DB, "rule_add", r["id"], r["text"])
     return r
 

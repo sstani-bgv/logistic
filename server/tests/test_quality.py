@@ -293,3 +293,11 @@ def test_backup_and_restore_scripts(tmp_path):
 def test_empty_ati_token_message(monkeypatch):
     monkeypatch.setattr(main.ati, "TOKEN", "")
     assert "ATI_TOKEN не задан" in main.ati_err(httpx.LocalProtocolError("Illegal header value b'Bearer '"))
+
+
+def test_rule_add_when_model_down(monkeypatch, make_client):
+    async def down(*a, **k):
+        raise main.llm.LLMError("LLM HTTP 402")
+    monkeypatch.setattr(main.agent, "learn_rule", down)
+    r = make_client("logist").post("/api/rules", json={"text": "не возим кирпич"})
+    assert r.status_code == 503 and "402" in r.json()["detail"]

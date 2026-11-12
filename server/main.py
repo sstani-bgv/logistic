@@ -207,9 +207,9 @@ async def agent_step(d):
     STEPPING.add(d["id"])
     try:
         await _agent_step(d)
-    except Exception as e:
-        DB.execute("update dialogs set status='waiting', summary=?, fails=coalesce(fails,0)+1 where id=? and status='writing'",
-                   (f"Ошибка: {e}", d["id"]))
+    except Exception as e:  # любая ошибка шага — в summary, чтобы логист её видел (закрытый диалог не трогаем)
+        DB.execute("update dialogs set status='waiting', summary=?, fails=coalesce(fails,0)+1 where id=? "
+                   "and status in ('writing','waiting','ready')", (f"Ошибка: {type(e).__name__}: {e}", d["id"]))
         log(f"Ошибка агента в диалоге #{d['id']}: {e}", "error")
     finally:
         STEPPING.discard(d["id"])
@@ -502,16 +502,23 @@ async def call_loop():
     """Раз в минуту: закрыть зависшие звонки; молчат в чате дольше call_after_min — звоним (в окне, в лимитах)."""
     while True:
         try:
-            await reap_stale_calls()
-            st = settings()
-            if st["call_enabled"] and calls.in_window(st["call_hours"]):
-                for d in calls.due_dialogs(DB, st):
-                    call, why = await start_call(d)
-                    if why and (why.startswith("дневной лимит") or why.startswith("ошибка телефонии")):
-                        break
+            await call_tick()
         except Exception as e:
             log(f"Ошибка планировщика звонков: {e}", "error")
         await asyncio.sleep(60)
+
+
+async def call_tick():
+    """Один проход планировщика: закрыть зависшие, позвонить тем, кто молчит. -> [(dialog_id, call|None, причина)]."""
+    await reap_stale_calls()
+    st, done = settings(), []
+    if st["call_enabled"] and calls.in_window(st["call_hours"]):
+        for d in calls.due_dialogs(DB, st):
+            call, why = await start_call(d)
+            done.append((d["id"], call, why))
+            if why and (why.startswith("дневной лимит") or why.startswith("ошибка телефонии")):
+                break
+    return done
 
 
 @asynccontextmanager

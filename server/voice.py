@@ -33,6 +33,8 @@ def cfg():
         "url": os.environ.get("YC_RT_URL") or f"wss://ai.api.cloud.yandex.net/v1/realtime/openai?model=gpt://{folder}/{model}",
         "ready": bool((os.environ.get("YC_RT_API_KEY") or os.environ.get("YC_API_KEY")) and (folder or os.environ.get("YC_RT_URL"))),
         "voice": os.environ.get("YC_RT_VOICE") or ("sergey" if "tts-live" in model else "kirill"),
+        # пауза собеседника, после которой агент отвечает: по телефону люди говорят с паузами после запятых
+        "silence_ms": int(os.environ.get("VOICE_SILENCE_MS", 1100)),
         "call_sec": int(os.environ.get("VOICE_CALL_SEC", 240)),
         "idle_sec": int(os.environ.get("VOICE_IDLE_SEC", 25)),
         "rub_sec": float(os.environ.get("VOICE_RUB_SEC", 0.1)),  # ≈6 ₽/мин — оценка как на сайте; сверить со счётом Яндекса
@@ -44,7 +46,8 @@ def session(instructions, c):
     pcm = {"type": "audio/pcm", "rate": RATE}
     return {"type": "realtime", "output_modalities": ["audio"], "instructions": instructions,
             "audio": {"input": {"format": pcm,
-                                "turn_detection": {"type": "server_vad", "threshold": 0.5, "silence_duration_ms": 900}},
+                                "turn_detection": {"type": "server_vad", "threshold": 0.5,
+                                                   "silence_duration_ms": c["silence_ms"]}},
                       "output": {"format": pcm, "voice": c["voice"]}}}
 
 
@@ -64,17 +67,28 @@ def from_client(ev):
 
 
 def collect(ev, turns, buf):
-    """Текст разговора: фраза собеседника — целиком, ответ агента — из кусков, по концу ответа."""
+    """Текст разговора. Yandex присылает распознанное у собеседника нарастающим итогом («да» → «да слушаю» → …) —
+    берём только новое и склеиваем подряд идущие куски; ответ агента — из кусков, по концу ответа;
+    ответ, который собеседник перебил, — с «…», огрызки в одну-две буквы не пишем."""
     t, said = ev.get("type"), str(ev.get("transcript") or "").strip()
     if t == HEARD and said:
-        turns.append({"who": "Заказчик", "text": said})
+        prev = buf.get("_heard", "")
+        new = said[len(prev):].strip() if prev and said.lower().startswith(prev.lower()) else said
+        buf["_heard"] = said
+        if new:
+            if turns and turns[-1]["who"] == "Заказчик":
+                turns[-1]["text"] += " " + new
+            else:
+                turns.append({"who": "Заказчик", "text": new})
     elif t in SAY:
         buf.setdefault(t, []).append(str(ev.get("delta") or ""))
     elif t in ("response.created", "response.done"):
         text = "".join(buf.get(SAY[0]) or buf.get(SAY[1]) or []).strip()
-        buf.clear()
-        if text:
-            turns.append({"who": "Агент", "text": text})
+        for k in SAY:
+            buf.pop(k, None)
+        cut = (ev.get("response") or {}).get("status") in ("cancelled", "incomplete")
+        if len(text) > 2:
+            turns.append({"who": "Агент", "text": text + (" …" if cut else "")})
 
 
 def explain(e):

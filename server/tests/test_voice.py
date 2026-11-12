@@ -131,3 +131,24 @@ def test_ws_not_configured_and_daily_cap(env, monkeypatch, make_client):
     main.DB.execute("insert into voice_usage values(strftime('%s','now'),?,600,60,'x','limit')", (did,))
     with c.websocket_connect(f"/api/voice/test/{did}") as ws:
         assert "лимит" in ws.receive_json()["text"]
+
+
+def test_collect_cumulative_transcript_and_cut_answers():
+    turns, buf = [], {}
+    for x in ["да", "да слушаю", "да слушаю груз актуален"]:
+        voice.collect({"type": voice.HEARD, "transcript": x}, turns, buf)
+    voice.collect({"type": "response.created"}, turns, buf)
+    voice.collect({"type": "response.output_audio_transcript.delta", "delta": "Г"}, turns, buf)
+    voice.collect({"type": "response.done", "response": {"status": "cancelled"}}, turns, buf)  # огрызок перебитого
+    voice.collect({"type": "response.output_audio_transcript.delta", "delta": "Понял, а адрес погрузки"}, turns, buf)
+    voice.collect({"type": "response.done", "response": {"status": "cancelled"}}, turns, buf)
+    voice.collect({"type": voice.HEARD, "transcript": "да слушаю груз актуален Шушары"}, turns, buf)
+    voice.collect({"type": voice.HEARD, "transcript": "Колпино"}, turns, buf)  # новый отрезок, не продолжение
+    assert voice.transcript(turns) == ("Заказчик: да слушаю груз актуален\nАгент: Понял, а адрес погрузки …\n"
+                                       "Заказчик: Шушары Колпино")
+
+
+def test_voice_prompt_forbids_agreeing():
+    import agent
+    v = agent.VOICE.split("\n")[1]
+    assert v.startswith("ГЛАВНОЕ ПРАВИЛО") and "«подходит»" in v and "«берём»" in v

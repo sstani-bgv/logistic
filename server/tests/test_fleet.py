@@ -232,3 +232,12 @@ def test_truck_form_validation(client):
 def test_release_due_handles_empty_date():
     tid = truck("broken", "busy", "")
     assert fleet.release_due(main.DB) == [tid]
+
+
+def test_busy_until_reads_city_code_from_geocode():
+    """Реальные грузы АТИ: у города выгрузки нет cityId, но есть geoCode «2_<код>»."""
+    raw = load_raw()
+    raw["unloading"] = {"location": {"city": "Казань", "lat": 55.78, "lon": 49.12, "geoCode": "2_80"}}
+    u = fleet.busy_until(raw, {"dist": 893}, today=date(2026, 11, 14))
+    assert u["city_name"] == "Казань" and u["city_id"] == 80 and u["lat"] == 55.78
+    assert fleet.geo_city_id({"geoCode": "1_5"}) is None and fleet.geo_city_id({}) is None  # не город — не берём

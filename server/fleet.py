@@ -1,6 +1,7 @@
 """Статус машины вручную, без GPS (ТЗ 2.3): free / busy, где и когда освободится."""
 from datetime import date, datetime, timedelta
 from math import ceil
+import re
 
 KM_PER_DAY = 500  # расчётный суточный пробег, если в грузе нет даты выгрузки
 SCAN_AHEAD_DAYS = 2  # занятые машины начинаем сканировать за 2 дня до освобождения
@@ -20,6 +21,12 @@ def scan_filter(today=None, alias=""):
     return f"{a}active=1 and (coalesce({a}status,'free')='free' or coalesce({a}free_from,'')<=?)", (edge,)
 
 
+def geo_city_id(loc):
+    """Код города АТИ из geoCode выдачи: «2_80» = город (тип 2) с кодом 80 (Казань). Есть в каждом реальном грузе."""
+    m = re.fullmatch(r"2_(\d+)", str((loc or {}).get("geoCode") or ""))
+    return int(m.group(1)) if m else None
+
+
 def busy_until(load, metrics, today=None):
     """Куда и когда освободится машина после груза: город выгрузки + дата выгрузки (или погрузка + дни пути)."""
     un, ld = load.get("unloading") or {}, load.get("loading") or {}
@@ -29,7 +36,7 @@ def busy_until(load, metrics, today=None):
         start = _d(ld.get("lastDate")) or _d(ld.get("firstDate")) or today or date.today()
         dist = (metrics or {}).get("dist") or (load.get("route") or {}).get("distance") or 0
         when = start + timedelta(days=max(1, ceil(dist / KM_PER_DAY)))
-    return {"city_name": loc.get("city"), "city_id": loc.get("cityId") or loc.get("city_id"),
+    return {"city_name": loc.get("city"), "city_id": loc.get("cityId") or loc.get("city_id") or geo_city_id(loc),
             "lat": loc.get("lat"), "lon": loc.get("lon"), "free_from": when.isoformat()}
 
 

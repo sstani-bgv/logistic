@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import sqlite3
 import time
 
@@ -104,9 +105,11 @@ def q(sql, *a):
 
 
 def settings():
+    """Только известные настройки: в kv лежат и служебные значения (ключ МегаФона, секрет вебхука) — наружу они не идут."""
     s = dict(DEFAULTS)
     for r in q("select * from kv"):
-        s[r["k"]] = json.loads(r["v"])
+        if r["k"] in DEFAULTS:
+            s[r["k"]] = json.loads(r["v"])
     return s
 
 
@@ -454,10 +457,52 @@ RECORDINGS = DATA_DIR / "recordings"
 CALL_RUB_PER_MIN = float(os.environ.get("CALL_RUB_PER_MIN", "3"))  # связь ВАТС
 # голос Yandex Realtime: та же оценка, что у тестовых звонков (VOICE_RUB_SEC × 60), пока не задано своё
 SPEECH_RUB_PER_MIN = float(os.environ.get("SPEECH_RUB_PER_MIN") or voice.cfg()["rub_sec"] * 60)
-WEBHOOK_SECRET = os.environ.get("TELEPHONY_WEBHOOK_SECRET", "")
-if 0 < len(WEBHOOK_SECRET) < 32:
-    log("TELEPHONY_WEBHOOK_SECRET короче 32 символов — вебхук выключен (openssl rand -hex 24)", "error")
-    WEBHOOK_SECRET = ""
+ENV_WEBHOOK_SECRET = os.environ.get("TELEPHONY_WEBHOOK_SECRET", "")
+if 0 < len(ENV_WEBHOOK_SECRET) < 32:
+    log("TELEPHONY_WEBHOOK_SECRET короче 32 символов — используем секрет, созданный программой", "error")
+    ENV_WEBHOOK_SECRET = ""
+
+
+def kv_get(k, default=None):
+    r = q("select v from kv where k=?", k)
+    return json.loads(r[0]["v"]) if r else default
+
+
+def kv_set(k, v):
+    DB.execute("insert into kv values(?,?) on conflict(k) do update set v=excluded.v", (k, json.dumps(v)))
+
+
+def webhook_secret():
+    """Секрет в адресе для уведомлений ВАТС: из .env или созданный программой один раз (не угадать, не короче 32)."""
+    if ENV_WEBHOOK_SECRET:
+        return ENV_WEBHOOK_SECRET
+    s = kv_get("webhook_secret")
+    if not s:
+        s = secrets.token_hex(24)
+        kv_set("webhook_secret", s)
+    return s
+
+
+def phone_cfg():
+    """Телефония: «Настройки» программы, а где пусто — .env. Ключ API хранится только в базе на сервере."""
+    return {"mode": kv_get("phone_mode") or os.environ.get("TELEPHONY") or "off",
+            "url": kv_get("megafon_url") or "", "token": kv_get("megafon_key") or "", "user": kv_get("megafon_user") or "",
+            "api": kv_get("megafon_api")}
+
+
+def crm_token():
+    """«Ключ для авторизации в вашей CRM»: программа придумывает его сама, владелец вписывает в кабинет ВАТС."""
+    s = kv_get("megafon_crm_token")
+    if not s:
+        s = secrets.token_hex(16)
+        kv_set("megafon_crm_token", s)
+    return s
+
+
+def reload_phone():
+    global PHONE
+    PHONE = telephony.make(apply_call_result, phone_cfg())
+    return PHONE
 MAX_RECORDING = 50 * 1024 * 1024
 STALE_CALL_MIN = 20  # без итога от телефонии дольше — считаем звонок несостоявшимся
 
@@ -626,7 +671,7 @@ async def fetch_recording(cid, url):
         log(f"Запись звонка #{cid} не скачалась: {e}", "error")
 
 
-PHONE = telephony.make(apply_call_result)
+PHONE = telephony.make(apply_call_result, phone_cfg())
 CALL_LINES = max(1, int(os.environ.get("CALL_LINES", "1")))  # одновременных звонков (линий бота в ВАТС)
 llm.USAGE_HOOK = lambda model, pin, pout, rub: DB.execute("insert into llm_usage values(?,?,?,?,?)",
                                                           (time.time(), model, pin, pout, rub))
@@ -855,8 +900,9 @@ def health(now=None):
         add("phone", f"звонки включены, но {PHONE.why}")
     elif HEALTH["phone"]["ok"] is False:
         add("phone", HEALTH["phone"]["err"])
-    if PHONE.mode == "megafon" and not WEBHOOK_SECRET:
-        add("phone", "вебхук ВАТС выключен: TELEPHONY_WEBHOOK_SECRET не задан или короче 32 символов — итоги звонков не придут")
+    if PHONE.mode == "megafon" and not kv_get("megafon_webhook_seen"):
+        add("phone", "ВАТС ещё не прислала ни одного уведомления о звонке — проверьте, что адрес из «Настройки» → «Телефония» "
+                     "вставлен в кабинет ВАТС", "warn")
     if not ati.CLIENT_ID_SET:
         add("ati", "ATI_CLIENT_ID не задан — запросы идут с ID интегратора", "warn")
     if b := backup_state(now):
@@ -1184,7 +1230,7 @@ async def dnc_del(phone: str):
 @app.post("/api/telephony/webhook/{secret}")
 async def telephony_webhook(secret: str, request: Request):
     """Вебхук ВАТС (form, cmd=history) и голосового бота (JSON: call_id, status, transcript, duration)."""
-    if not WEBHOOK_SECRET or not hmac.compare_digest(secret.encode(), WEBHOOK_SECRET.encode()):
+    if not hmac.compare_digest(secret.encode(), webhook_secret().encode()):
         raise HTTPException(403)
     if "json" in request.headers.get("content-type", ""):
         try:
@@ -1196,9 +1242,72 @@ async def telephony_webhook(secret: str, request: Request):
         key = b.get("call_id") or b.get("provider_id")  # бот адресует нашим call_id, ВАТС — своим id
         c = await apply_call_result(key, b, by_provider=not b.get("call_id"), background=True) if key else None
     else:
-        pid, res = telephony.parse_megafon(dict(await request.form()))
+        form = dict(await request.form())
+        sent = str(form.get("crm_token") or "")  # ВАТС кладёт в уведомление «Ключ для авторизации в вашей CRM»
+        if sent and not hmac.compare_digest(sent.encode(), crm_token().encode()):
+            raise HTTPException(403)
+        if not kv_get("megafon_webhook_seen"):
+            kv_set("megafon_webhook_seen", time.time())
+        pid, res = telephony.parse_megafon(form)
         c = await apply_call_result(pid, res, by_provider=True, background=True) if pid else None
     return {"ok": True, "matched": bool(c)}
+
+
+# ---------- телефония в «Настройках»: владелец подключает МегаФон сам, ключи не ходят по переписке ----------
+class PhoneSettings(BaseModel):
+    mode: str | None = None  # off | megafon | mock
+    url: str | None = Field(None, max_length=500)
+    key: str | None = Field(None, max_length=500)  # пусто — оставить сохранённый
+    user: str | None = Field(None, max_length=200)
+
+
+
+def phone_view(request: Request):
+    c = phone_cfg()
+    key = c["token"]
+    base = str(request.base_url).rstrip("/")
+    return {"mode": c["mode"], "url": c["url"], "user": c["user"], "key_set": bool(key), "key_hint": f"…{key[-4:]}" if key else "",
+            "crm_token": crm_token(), "api": getattr(PHONE, "api", None), "ready": PHONE.ready, "why": PHONE.why,
+            "webhook_url": f"{base}/api/telephony/webhook/{webhook_secret()}",
+            "webhook_seen": kv_get("megafon_webhook_seen")}
+
+
+@app.get("/api/phone", dependencies=[Depends(auth.require_owner)])
+async def get_phone(request: Request):
+    return phone_view(request)
+
+
+@app.put("/api/phone", dependencies=[Depends(auth.require_owner)])
+async def put_phone(b: PhoneSettings, request: Request):
+    if b.mode is not None and b.mode not in ("off", "megafon", "mock"):
+        raise HTTPException(400, "Режим телефонии: off, megafon или mock")
+    if b.url and not re.match(r"^(https://)?[A-Za-z0-9.-]+\.[A-Za-z]{2,}(/\S*)?$", b.url.strip()):
+        raise HTTPException(400, "Адрес кабинета ВАТС — например vats000000.cp.megafon.ru (из строки браузера)")
+    if b.url is not None and b.url.strip() != (kv_get("megafon_url") or ""):
+        DB.execute("delete from kv where k='megafon_api'")  # новый адрес — формат API определим заново
+    for k, v in (("phone_mode", b.mode), ("megafon_url", b.url), ("megafon_user", b.user)):
+        if v is not None:
+            kv_set(k, v.strip())
+    if b.key:  # пустой ключ = оставить прежний
+        kv_set("megafon_key", b.key.strip())
+    reload_phone()
+    auth.record(DB, "phone_settings", None, f"режим {phone_cfg()['mode']}, бот {phone_cfg()['user'] or '—'}")
+    return phone_view(request)
+
+
+@app.post("/api/phone/check", dependencies=[Depends(auth.require_owner)])
+async def check_phone():
+    if PHONE.mode != "megafon":
+        raise HTTPException(400, "Сначала выберите «МегаФон» и сохраните")
+    try:
+        r = await PHONE.check()
+    except RuntimeError as e:
+        mark("phone", False, e)
+        raise HTTPException(502, str(e)) from e
+    kv_set("megafon_api", r["api"])
+    reload_phone()
+    mark("phone", True)
+    return r
 
 
 class DStatus(BaseModel):

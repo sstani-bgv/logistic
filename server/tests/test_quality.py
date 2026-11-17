@@ -79,8 +79,8 @@ def test_telephony_states(monkeypatch):
     monkeypatch.setenv("MEGAFON_API_KEY", "k")
     monkeypatch.setenv("MEGAFON_BOT_USER", "bot")
     monkeypatch.setattr(main, "PHONE", telephony.MegafonProvider(None))
-    monkeypatch.setattr(main, "WEBHOOK_SECRET", "")
-    assert "вебхук ВАТС выключен" in parts()[("phone", "error")]
+    main.DB.execute("delete from kv where k='megafon_webhook_seen'")
+    assert "не прислала ни одного уведомления" in parts()[("phone", "warn")]
 
 
 def test_default_telephony_is_off(monkeypatch):
@@ -366,3 +366,93 @@ def test_taken_strips_city_suffix(monkeypatch, make_client):
     monkeypatch.setattr(main, "city", lookup)
     make_client("logist").patch(f"/api/dialogs/{did}", json={"status": "taken"})
     assert asked == ["Колпино г.", "Колпино"] and main.q("select city_id from trucks where id=?", tid)[0]["city_id"] == 1165
+
+
+# --- телефония в «Настройках» ---
+
+def reset_phone():
+    for k in ("phone_mode", "megafon_url", "megafon_key", "megafon_user", "megafon_crm_token"):
+        main.DB.execute("delete from kv where k=?", (k,))
+    main.reload_phone()  # снова как задано в окружении тестов (TELEPHONY=mock)
+
+def test_phone_settings_owner_only_and_key_hidden(make_client, monkeypatch):
+    owner, lg = make_client("owner"), make_client("logist", "lg2")
+    for k in ("phone_mode", "megafon_url", "megafon_key", "megafon_user", "megafon_crm_token"):
+        main.DB.execute("delete from kv where k=?", (k,))
+    assert lg.get("/api/phone").status_code == 403 and lg.put("/api/phone", json={"mode": "off"}).status_code == 403
+    r = owner.put("/api/phone", json={"mode": "megafon", "url": "https://vats1.cp.megafon.ru/crmapi/v1",
+                                      "key": "secret-key-1234", "user": "bot@vats1"})
+    v = r.json()
+    assert r.status_code == 200 and v["key_set"] and v["key_hint"] == "…1234" and "secret-key" not in r.text
+    assert v["ready"] and main.PHONE.mode == "megafon" and main.PHONE.token == "secret-key-1234"  # подхватилось без перезапуска
+    assert v["webhook_url"].endswith("/api/telephony/webhook/" + main.webhook_secret())
+    assert "secret-key" not in owner.get("/api/settings").text  # в общих настройках ключа нет
+    assert owner.put("/api/phone", json={"user": "bot2@vats1"}).json()["key_set"]  # пустой ключ — прежний сохраняется
+    assert owner.put("/api/phone", json={"mode": "x"}).status_code == 400
+    assert owner.put("/api/phone", json={"url": "http://bad"}).status_code == 400
+    reset_phone()
+
+
+def test_phone_check(make_client, monkeypatch):
+    owner = make_client("owner")
+    owner.put("/api/phone", json={"mode": "megafon", "url": "https://vats1.cp.megafon.ru/crmapi/v1", "key": "k", "user": "bot@vats1"})
+
+    def handler(req):
+        body = dict(httpx.QueryParams(req.content.decode()))
+        if body.get("token") != "k":
+            return httpx.Response(401)
+        return httpx.Response(200, json=[{"login": "bot@vats1"}, {"login": "ivan@vats1"}])
+    monkeypatch.setattr(telephony, "TRANSPORT", httpx.MockTransport(handler))
+    assert owner.post("/api/phone/check").json() == {"employees": 2, "bot_found": True, "api": "legacy"}
+    owner.put("/api/phone", json={"key": "wrong"})
+    r = owner.post("/api/phone/check")
+    assert r.status_code == 502 and "отклонила ключ" in r.json()["detail"]
+    reset_phone()
+
+
+def test_webhook_crm_token_checked(monkeypatch):
+    monkeypatch.setattr(main, "ENV_WEBHOOK_SECRET", "")
+    main.kv_set("megafon_crm_token", "crm-xyz")  # как будто программа уже придумала ключ
+    s = main.webhook_secret()
+    anon = TestClient(main.app)
+    assert anon.post(f"/api/telephony/webhook/{s}", data={"cmd": "event", "crm_token": "nope"}).status_code == 403
+    assert anon.post(f"/api/telephony/webhook/{s}", data={"cmd": "event", "crm_token": "crm-xyz"}).status_code == 200
+    main.DB.execute("delete from kv where k='megafon_crm_token'")
+
+
+def test_phone_check_falls_back_to_v1_api(make_client, monkeypatch):
+    owner = make_client("owner")
+    owner.put("/api/phone", json={"mode": "megafon", "url": "vats1.cp.megafon.ru", "key": "k", "user": "bot@vats1"})
+    seen = []
+
+    def handler(req):
+        seen.append((req.method, req.url.path, req.headers.get("x-api-key")))
+        if req.url.path == "/sys/crm_api.wcgp":
+            return httpx.Response(404)
+        if req.url.path == "/crmapi/v1/users" and req.headers.get("x-api-key") == "k":
+            return httpx.Response(200, json={"data": [{"login": "bot@vats1"}]})
+        if req.url.path == "/crmapi/v1/makecall":
+            return httpx.Response(200, json={"uuid": "v1-call"})
+        return httpx.Response(404)
+    monkeypatch.setattr(telephony, "TRANSPORT", httpx.MockTransport(handler))
+    assert owner.post("/api/phone/check").json() == {"employees": 1, "bot_found": True, "api": "v1"}
+    assert owner.get("/api/phone").json()["api"] == "v1" and main.PHONE.api == "v1"  # формат запомнился
+    assert asyncio.run(main.PHONE.start({"id": 1, "phone": "+79215551234"}, {})) == "v1-call"
+    assert seen[0][1] == "/sys/crm_api.wcgp" and ("POST", "/crmapi/v1/makecall", "k") in seen
+    reset_phone()
+
+
+@pytest.mark.parametrize("raw, base, api", [("vats865841.cp.megafon.ru", "https://vats865841.cp.megafon.ru", "legacy"),
+                                            ("https://vats1.megapbx.ru/sys/crm_api.wcgp", "https://vats1.megapbx.ru", "legacy"),
+                                            ("https://vats1.cp.megafon.ru/crmapi/v1", "https://vats1.cp.megafon.ru", "v1"),
+                                            ("https://vats1.cp.megafon.ru/#/settings", "https://vats1.cp.megafon.ru", "legacy")])
+def test_megafon_url_parsing(raw, base, api):
+    assert telephony.MegafonProvider.parse_url(raw) == (base, api)
+
+
+def test_phone_view_gives_crm_key_to_copy(make_client):
+    v = make_client("owner").get("/api/phone").json()
+    assert len(v["crm_token"]) >= 32 and v["crm_token"] == main.crm_token()  # один и тот же, создан программой
+    anon = TestClient(main.app)
+    s = main.webhook_secret()
+    assert anon.post(f"/api/telephony/webhook/{s}", data={"cmd": "event"}).status_code == 200  # без ключа — путь секретный

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
-import { Plus, Save, Trash2, X } from "lucide-react"
+import { CheckCircle2, Copy, Loader2, Phone, Plus, Save, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -91,6 +91,7 @@ export default function SettingsPage() {
           </div>
         </section>
       ))}
+      <PhoneSettings />
       <DncList />
     </div>
   )
@@ -117,6 +118,111 @@ function ListField({ f, value, onChange }: { f: Field; value: string[]; onChange
 }
 
 type Dnc = { phone: string; reason: string; created: number; by_login: string }
+
+type PhoneT = { mode: "off" | "megafon" | "mock"; url: string; user: string; key_set: boolean; key_hint: string; crm_token: string
+  api: "legacy" | "v1" | null; ready: boolean; why: string; webhook_url: string; webhook_seen: number | null }
+const MODES: { id: PhoneT["mode"]; label: string; hint: string }[] = [
+  { id: "off", label: "Выключена", hint: "агент не звонит" },
+  { id: "megafon", label: "МегаФон", hint: "звонки через вашу виртуальную АТС" },
+  { id: "mock", label: "Имитация", hint: "для проверки: звонки и расшифровки не настоящие" },
+]
+
+function CopyRow({ id, label, value }: { id: string; label: string; value: string }) {
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(value); toast.success("Скопировано") }
+    catch { toast.info("Выделите и скопируйте вручную") }
+  }
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label htmlFor={id}>{label}</Label>
+      <div className="flex gap-2">
+        <Input id={id} readOnly value={value} onFocus={(e) => e.currentTarget.select()} className="font-mono text-xs" />
+        <Button type="button" variant="outline" onClick={copy} aria-label={`Скопировать: ${label}`}><Copy />Скопировать</Button>
+      </div>
+    </div>
+  )
+}
+
+/** Подключение ВАТС МегаФон прямо из программы: ключи вставляет владелец, по переписке они не ходят.
+ *  Названия полей — как в кабинете ВАТС: «Настройки» → «Интеграция с CRM» → «Ваша CRM / REST API». */
+function PhoneSettings() {
+  const [p, setP] = useState<PhoneT | null>(null)
+  const [f, setF] = useState({ mode: "off" as PhoneT["mode"], url: "", user: "", key: "" })
+  const [busy, setBusy] = useState<"" | "save" | "check">("")
+  const [check, setCheck] = useState<{ ok: boolean; text: string } | null>(null)
+  const apply = (v: PhoneT) => { setP(v); setF({ mode: v.mode, url: v.url, user: v.user, key: "" }) }
+  useEffect(() => { api<PhoneT>("/phone").then(apply).catch((e) => toast.error(errText(e))) }, [])
+  const save = async () => {
+    setBusy("save"); setCheck(null)
+    try {
+      const body: Record<string, string> = { mode: f.mode, url: f.url, user: f.user }
+      if (f.key.trim()) body.key = f.key
+      apply(await api<PhoneT>("/phone", { method: "PUT", body })); toast.success("Телефония сохранена")
+    } catch (e) { toast.error(errText(e)) } finally { setBusy("") }
+  }
+  const test = async () => {
+    setBusy("check"); setCheck(null)
+    try {
+      const r = await api<{ employees: number; bot_found: boolean; api: string }>("/phone/check", { method: "POST" })
+      setCheck({ ok: r.bot_found, text: r.bot_found ? `Подключено: ВАТС на связи, сотрудников ${r.employees}, бот найден.`
+        : `ВАТС на связи (сотрудников ${r.employees}), но сотрудника «${f.user}» среди них нет — проверьте логин бота.` })
+      setP(await api<PhoneT>("/phone"))
+    } catch (e) { setCheck({ ok: false, text: errText(e) }) } finally { setBusy("") }
+  }
+  if (!p) return null
+  const dirty = f.mode !== p.mode || f.url !== p.url || f.user !== p.user || !!f.key
+  return (
+    <section className="rounded-xl border bg-card p-5" id="phone">
+      <h2 className="mb-1 flex items-center gap-2 font-medium"><Phone className="size-4" />Телефония</h2>
+      <p className="mb-4 text-sm text-muted-foreground">Звонки агента через виртуальную АТС МегаФон. Нужен администратор ВАТС и подключённая в кабинете «Интеграция с CRM».</p>
+      <div className="mb-4 flex flex-wrap gap-2" role="radiogroup" aria-label="Режим телефонии">
+        {MODES.map((m) => (
+          <button key={m.id} type="button" role="radio" aria-checked={f.mode === m.id} onClick={() => setF({ ...f, mode: m.id })}
+            className={`rounded-lg border px-3 py-2 text-left text-sm ${f.mode === m.id ? "border-primary bg-accent text-primary" : "hover:bg-muted"}`}>
+            <div className="font-medium">{m.label}</div><div className="text-xs text-muted-foreground">{m.hint}</div>
+          </button>
+        ))}
+      </div>
+      {f.mode === "megafon" && (
+        <div className="flex flex-col gap-5">
+          <div className="flex flex-col gap-3">
+            <div className="text-sm font-medium">1. Скопируйте сюда из кабинета ВАТС</div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="flex flex-col gap-1.5 sm:col-span-2">
+                <Label htmlFor="ph-url">Адрес кабинета ВАТС</Label>
+                <Input id="ph-url" value={f.url} placeholder="vats000000.cp.megafon.ru" onChange={(e) => setF({ ...f, url: e.target.value })} />
+                <span className="text-xs text-muted-foreground">Из строки браузера, когда вы вошли в кабинет.</span>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="ph-key">Ключ для авторизации в АТС</Label>
+                <Input id="ph-key" type="password" autoComplete="off" value={f.key} placeholder={p.key_set ? `сохранён ${p.key_hint} — оставьте пустым` : "кнопка «Скопировать ключ» в кабинете"}
+                  onChange={(e) => setF({ ...f, key: e.target.value })} />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="ph-user">Логин сотрудника-бота</Label>
+                <Input id="ph-user" value={f.user} placeholder="bot@vats000000.cp.megafon.ru" onChange={(e) => setF({ ...f, user: e.target.value })} />
+              </div>
+            </div>
+          </div>
+          <div className="flex flex-col gap-3">
+            <div className="text-sm font-medium">2. Впишите в кабинет ВАТС, в те же настройки интеграции</div>
+            <CopyRow id="ph-hook" label="Адрес вашей CRM" value={p.webhook_url} />
+            <CopyRow id="ph-crm" label="Ключ для авторизации в вашей CRM" value={p.crm_token} />
+            <span className="text-xs text-muted-foreground">{p.webhook_seen ? `ВАТС уже присылала уведомления о звонках — ${ago(p.webhook_seen)}.` : "ВАТС ещё не присылала уведомлений о звонках."}</span>
+          </div>
+        </div>
+      )}
+      <div className="mt-5 flex flex-wrap items-center gap-2">
+        <Button type="button" onClick={save} disabled={!!busy || !dirty}>{busy === "save" ? <Loader2 className="animate-spin" /> : <Save />}Сохранить</Button>
+        {p.mode === "megafon" && <Button type="button" variant="outline" onClick={test} disabled={!!busy || dirty}>
+          {busy === "check" ? <Loader2 className="animate-spin" /> : <CheckCircle2 />}3. Проверить подключение</Button>}
+        {dirty && f.mode === "megafon" && <span className="text-xs text-muted-foreground">сначала сохраните</span>}
+      </div>
+      {p.mode === "megafon" && !p.ready && <p className="mt-3 text-sm text-destructive">{p.why}</p>}
+      {check && <p role="status" className={`mt-3 text-sm ${check.ok ? "text-emerald-700 dark:text-emerald-400" : "text-destructive"}`}>{check.text}</p>}
+    </section>
+  )
+}
 
 function DncList() {
   const { data, reload } = usePoll<Dnc[]>("/dnc", 30000)

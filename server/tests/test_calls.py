@@ -198,7 +198,7 @@ def test_dnc_api(make_client):
 
 def test_webhook(monkeypatch):
     from fastapi.testclient import TestClient
-    monkeypatch.setattr(main, "WEBHOOK_SECRET", "s3cret")
+    monkeypatch.setattr(main, "ENV_WEBHOOK_SECRET", "s3cret")
     anon = TestClient(main.app)
     did = mk_dialog()
     main.DB.execute("insert into calls(dialog_id,phone,status,created,provider_id) values(?,?,?,?,?)",
@@ -213,11 +213,14 @@ def test_webhook(monkeypatch):
     assert r.json()["matched"] and main.q("select kind from messages")[0]["kind"] == "call"
 
 
-def test_webhook_disabled_without_secret(monkeypatch):
+def test_webhook_secret_generated_and_required(monkeypatch):
     from fastapi.testclient import TestClient
-    monkeypatch.setattr(main, "WEBHOOK_SECRET", "")
-    assert TestClient(main.app).post("/api/telephony/webhook/", data={}).status_code in (403, 404, 405)
+    monkeypatch.setattr(main, "ENV_WEBHOOK_SECRET", "")
+    main.DB.execute("delete from kv where k='webhook_secret'")
+    s = main.webhook_secret()
+    assert len(s) >= 32 and main.webhook_secret() == s  # создаётся один раз и не меняется
     assert TestClient(main.app).post("/api/telephony/webhook/x", data={}).status_code == 403
+    assert TestClient(main.app).post(f"/api/telephony/webhook/{s}", data={"cmd": "event"}).status_code == 200
 
 
 # --- после ревью звонков и безопасности ---

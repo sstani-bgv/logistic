@@ -17,8 +17,32 @@ const ACTION: Record<string, string> = {
   dialog_ready: "отметил «готово»", dialog_auto_on: "включил автоответ", dialog_auto_off: "выключил автоответ",
   message_send: "написал вручную", agent_start: "запустил агента", truck_free: "машина свободна", truck_busy: "машина занята",
   truck_add: "добавил машину", truck_edit: "изменил машину", settings: "изменил настройки", user_add: "добавил сотрудника",
-  user_edit: "изменил сотрудника", call_now: "позвонить сейчас", dnc_add: "в стоп-лист",
+  user_edit: "изменил сотрудника", call_now: "позвонил", dnc_add: "в стоп-лист", dnc_delete: "убрал из стоп-листа",
+  phone_settings: "изменил телефонию", voice_test: "тестовый звонок", agent_on: "включил агента", agent_off: "выключил агента",
+  calls_on: "включил звонки", calls_off: "выключил звонки",
 }
+const SETTING: Record<string, string> = {
+  vat: "НДС", min_rate_km: "норма ₽/км", threshold: "порог оценки", scan_minutes: "частота прохода", pages: "страниц выдачи",
+  send_enabled: "отправка сообщений", auto_start: "автостарт", auto_score: "оценка автостарта", auto_per_cycle: "диалогов за проход",
+  auto_daily: "диалогов в день", default_goal: "сценарий по умолчанию", goal_presets: "готовые сценарии", call_enabled: "звонки",
+  call_after_min: "пауза до звонка", call_hours: "окно звонков", call_daily: "звонков в день",
+}
+const ON = (v: unknown) => (v === true ? "вкл" : v === false ? "выкл" : String(v))
+
+/** Подробность действия по-человечески: без кодов грузов и JSON. */
+function detailText(a: Action): string {
+  if (!a.detail) return ""
+  if (a.action === "settings") {
+    try {
+      const o = JSON.parse(a.detail) as Record<string, unknown>
+      const parts = Object.entries(o).filter(([k]) => SETTING[k] && !["default_goal", "goal_presets"].includes(k)).map(([k, v]) => `${SETTING[k]}: ${ON(v)}`)
+      const texts = Object.keys(o).filter((k) => ["default_goal", "goal_presets"].includes(k)).map((k) => SETTING[k])
+      return [...parts, ...texts].slice(0, 6).join(", ")
+    } catch { return "" }
+  }
+  return a.detail.replace(/\s*режим (off|megafon|mock)/, (_m, x) => ` ${x === "off" ? "выключена" : x === "megafon" ? "МегаФон" : "имитация"}`)
+}
+const refText = (r: string | null) => (r && /^\d+$/.test(r) ? ` #${r}` : "")  // коды грузов АТИ (uuid) не показываем
 
 export default function UsersPage({ me }: { me: User }) {
   const { data, reload } = usePoll<User[]>("/users", 15000)
@@ -65,8 +89,8 @@ export default function UsersPage({ me }: { me: User }) {
             <div key={a.id} className="flex flex-wrap gap-x-2">
               <span className="text-muted-foreground">{ago(a.ts)}</span>
               <span className="font-medium">{a.login}</span>
-              <span>{ACTION[a.action] ?? a.action}{a.ref ? ` #${a.ref}` : ""}</span>
-              {a.detail && <span className="truncate text-muted-foreground">— {a.detail}</span>}
+              <span>{ACTION[a.action] ?? a.action}{refText(a.ref)}</span>
+              {detailText(a) && <span className="min-w-0 truncate text-muted-foreground">— {detailText(a)}</span>}
             </div>
           ))}
         </div>

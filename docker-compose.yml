@@ -1,7 +1,10 @@
 # Прод: docker compose up -d --build   (.env лежит рядом, только на сервере)
 services:
   app:
-    build: .
+    build:
+      context: .
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
     restart: unless-stopped
     env_file: .env
     environment:

@@ -14,3 +14,4 @@ backup.env
 LOCAL_LOGIN.txt
 .pytest_cache/
 *.wav
+webdist

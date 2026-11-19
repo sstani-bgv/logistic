@@ -3,8 +3,8 @@ FROM node:22-alpine AS web
 WORKDIR /web
 # npmjs.org из РФ бывает недоступен: на сервере NPM_REGISTRY=https://registry.npmmirror.com в .env
 ARG NPM_REGISTRY=https://registry.npmjs.org
-ENV COREPACK_NPM_REGISTRY=$NPM_REGISTRY npm_config_registry=$NPM_REGISTRY
-RUN corepack enable && corepack prepare pnpm@10 --activate
+ENV npm_config_registry=$NPM_REGISTRY
+RUN npm install -g pnpm@10 --no-fund --no-audit
 COPY web/package.json web/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY web/ ./

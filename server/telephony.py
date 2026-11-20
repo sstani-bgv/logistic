@@ -6,6 +6,8 @@
 — от мока, от вебхука ВАТС (запись, длительность) и от голосового бота (расшифровка).
 """
 import asyncio
+import base64
+import json
 import os
 
 import httpx
@@ -61,27 +63,55 @@ class MockProvider:
         return f"mock-{call['id']}"
 
 
+CP_CALLAPI = "https://callapi.cp.megafon.ru/v4.0"
+CP_DATAAPI = "https://data-api.cp.megafon.ru/v2.0"
+
+
+def is_cp_token(token):
+    """Ключ нового кабинета МегаФона (vatsNNN.cp.megafon.ru, «Настройки API»): JWT от sso.cp.megafon.ru."""
+    parts = (token or "").strip().split(".")
+    if len(parts) != 3:
+        return False
+    try:
+        pl = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return isinstance(pl, dict) and "cp.megafon.ru" in str(pl.get("iss", ""))
+
+
 class MegafonProvider:
     """ВАТС МегаФон, интеграция «Ваша CRM / REST API» (кабинет: «Настройки» → «Интеграция с CRM»).
 
-    Два формата API у МегаФона: старый — POST https://<кабинет>/sys/crm_api.wcgp (cmd, token),
+    Новый кабинет (vatsNNN.cp.megafon.ru, платформа CoMagic/UIS): ключ — JWT из «Настройки API»,
+    JSON-RPC: Data API (get.employees, get.virtual_numbers) и Call API (start.employee_call), access_token в params.
+    Итог звонка ВАТС шлёт «Уведомлением» (событие «Завершение звонка», POST JSON по нашему шаблону).
+    Старые форматы API у МегаФона: старый — POST https://<кабинет>/sys/crm_api.wcgp (cmd, token),
     новый — https://<кабинет>/crmapi/v1/... с заголовком X-API-KEY. Какой у клиента — определяет check().
     Итоги звонков ВАТС шлёт на «Адрес вашей CRM» (наш вебхук), с полем crm_token.
     ПРОВЕРИТЬ на живой ВАТС: ответы accounts/users и makeCall (документация МегаФона неполная).
     """
     mode = "megafon"
 
-    def __init__(self, on_result, url=None, token=None, user=None, api=None):
+    def __init__(self, on_result, url=None, token=None, user=None, api=None, number=None):
         """Параметры — из «Настроек» программы; если там пусто — из .env (MEGAFON_API_URL / _KEY / _BOT_USER)."""
         self.on_result = on_result
         raw = (url or os.environ.get("MEGAFON_API_URL", "")).strip()
         self.token = (token or os.environ.get("MEGAFON_API_KEY", "")).strip()
         self.user = (user or os.environ.get("MEGAFON_BOT_USER", "")).strip()  # логин сотрудника-бота в ВАТС
+        self.number = (number or os.environ.get("MEGAFON_NUMBER", "")).strip().lstrip("+")  # номер для исходящих
         self.base, self.api = self.parse_url(raw)
-        self.api = api or self.api
+        if api and api != "cp":
+            self.api = api
+        if is_cp_token(self.token):
+            self.api = "cp"
         self.url = raw
-        self.ready = bool(self.base and self.token and self.user)
-        self.why = "" if self.ready else "ВАТС МегаФон не настроена: в «Настройках» → «Телефония» нужны адрес кабинета, ключ и логин бота"
+        self._emp = None  # id сотрудника-бота и номер, найденные в ВАТС (кэш до перезагрузки настроек)
+        if self.api == "cp":
+            self.ready = bool(self.token and self.user)
+            self.why = "" if self.ready else "ВАТС МегаФон не настроена: в «Настройках» → «Телефония» нужны ключ API и сотрудник-бот"
+        else:
+            self.ready = bool(self.base and self.token and self.user)
+            self.why = "" if self.ready else "ВАТС МегаФон не настроена: в «Настройках» → «Телефония» нужны адрес кабинета, ключ и логин бота"
 
     @staticmethod
     def parse_url(raw):
@@ -116,11 +146,61 @@ class MegafonProvider:
         except ValueError:
             return {}
 
+    async def _rpc(self, url, method, params=None):
+        """JSON-RPC нового кабинета; ключ — в params.access_token."""
+        body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": {"access_token": self.token, **(params or {})}}
+        try:
+            async with httpx.AsyncClient(timeout=20, transport=TRANSPORT) as c:
+                r = await c.post(url, json=body)
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"ВАТС не отвечает ({type(e).__name__}) — IP сервера должен быть в «Настройки API» кабинета, "
+                               "сервер — в России") from e
+        if r.status_code in (401, 403):
+            raise RuntimeError(f"ВАТС отклонила ключ ({r.status_code}) — скопируйте ключ заново в «Настройки API»")
+        if r.status_code >= 400:
+            raise RuntimeError(f"ВАТС HTTP {r.status_code}: {r.text[:200]}")
+        try:
+            j = r.json()
+        except ValueError:
+            raise RuntimeError(f"ВАТС ответила не JSON: {r.text[:200]}") from None
+        if isinstance(j, dict) and j.get("error"):
+            e = j["error"]
+            msg = (e.get("message") or "") if isinstance(e, dict) else str(e)
+            data = e.get("data") if isinstance(e, dict) else None
+            mnem = (data or {}).get("mnemonic", "") if isinstance(data, dict) else ""
+            raise RuntimeError(f"ВАТС: {method} — {msg} {mnem}".strip())
+        res = j.get("result") if isinstance(j, dict) else None
+        return (res or {}).get("data") if isinstance(res, dict) else None
+
+    async def _cp_lookup(self):
+        """Сотрудник-бот (по логину, ФИО, внутреннему номеру или id) и виртуальный номер для исходящих."""
+        emps = await self._rpc(CP_DATAAPI, "get.employees") or []
+        want = self.user.lower()
+        bot = None
+        for e in emps if isinstance(emps, list) else []:
+            if not isinstance(e, dict):
+                continue
+            ext = (e.get("extension") or {}).get("extension_phone_number") if isinstance(e.get("extension"), dict) else None
+            keys = {str(e.get(k) or "").lower() for k in ("id", "login", "full_name", "email")} | {str(ext or "").lower()}
+            if want in keys or want.split("@")[0] in keys:
+                bot = e
+                break
+        nums = await self._rpc(CP_DATAAPI, "get.virtual_numbers") or []
+        nums = [str(n.get("virtual_phone_number") or "") for n in nums if isinstance(n, dict)] if isinstance(nums, list) else []
+        nums = [n for n in nums if n]
+        number = self.number or (nums[0] if nums else "")
+        return {"employees": len(emps) if isinstance(emps, list) else 0, "bot": bot, "numbers": nums, "number": number}
+
     async def check(self):
         """Проверка без звонка: список сотрудников ВАТС; заодно определяем формат API.
         -> {"employees": n, "bot_found": bool, "api": "legacy" | "v1"}."""
         if not self.ready:
             raise RuntimeError(self.why)
+        if self.api == "cp":
+            r = await self._cp_lookup()
+            self._emp = r if r["bot"] else None
+            return {"employees": r["employees"], "bot_found": bool(r["bot"]), "api": "cp",
+                    "numbers": r["numbers"], "number": r["number"]}
         last = None
         for api, method, path, data in (("legacy", "POST", "", {"cmd": "accounts"}), ("v1", "GET", "/crmapi/v1/users", None)):
             try:
@@ -142,6 +222,18 @@ class MegafonProvider:
         if not self.ready:
             raise RuntimeError(self.why)
         phone = call["phone"].lstrip("+")
+        if self.api == "cp":
+            r = self._emp or await self._cp_lookup()
+            if not r["bot"]:
+                raise RuntimeError(f"В ВАТС нет сотрудника «{self.user}» — проверьте поле «Сотрудник-бот»")
+            if not r["number"]:
+                raise RuntimeError("В ВАТС нет виртуального номера для исходящих звонков")
+            self._emp = r
+            d = await self._rpc(CP_CALLAPI, "start.employee_call", {
+                "first_call": "employee", "switch_at_once": True, "virtual_phone_number": r["number"],
+                "contact": phone, "external_id": str(call["id"]), "direction": "out",
+                "employee": {"id": r["bot"]["id"]}})
+            return str((d or {}).get("call_session_id") or "")
         try:
             if self.api == "v1":
                 j = await self._send("POST", "/crmapi/v1/makecall", {"phone": phone, "user": self.user})
@@ -169,12 +261,38 @@ def parse_megafon(form):
                                 "recording_url": form.get("link") or None}
 
 
+def parse_cp(b):
+    """Уведомление нового кабинета («Завершение звонка», JSON по шаблону из «Настроек») → общий формат."""
+    pid = str(b.get("call_session_id") or "").strip()
+    if not pid or pid.startswith("{{"):
+        return None, None
+    try:
+        talk = int(float(b.get("talk_time_duration") or 0))
+    except (TypeError, ValueError):
+        talk = 0
+    reason = str(b.get("finish_reason") or "").lower()
+    status = "done" if talk > 0 else "busy" if "busy" in reason else "no_answer"
+    out = {"status": status, "duration": talk}
+    link = b.get("record_url") or b.get("file_link")
+    if isinstance(link, str) and link.startswith("https://"):
+        out["recording_url"] = link
+    return pid, out
+
+
+def cp_template(crm_token):
+    """Тело уведомления, которое владелец вставляет в кабинет ВАТС («Уведомления» → «Завершение звонка»)."""
+    return json.dumps({"call_session_id": "{{call_session_id}}", "external_id": "{{external_id}}",
+                       "contact_phone_number": "{{contact_phone_number}}", "finish_reason": "{{finish_reason}}",
+                       "talk_time_duration": "{{talk_time_duration}}", "crm_token": crm_token}, ensure_ascii=False)
+
+
 def make(on_result, cfg=None):
     """cfg — настройки из программы ({mode, url, token, user}); пустые поля — из .env."""
     cfg = cfg or {}
     name = (cfg.get("mode") or provider_name()).strip().lower()
     if name == "megafon":
-        return MegafonProvider(on_result, cfg.get("url"), cfg.get("token"), cfg.get("user"), cfg.get("api"))
+        return MegafonProvider(on_result, cfg.get("url"), cfg.get("token"), cfg.get("user"), cfg.get("api"),
+                               cfg.get("number"))
     if name == "mock":
         return MockProvider(on_result)
     if name in ("off", "none", "0", ""):

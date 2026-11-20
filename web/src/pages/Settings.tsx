@@ -120,14 +120,15 @@ function ListField({ f, value, onChange }: { f: Field; value: string[]; onChange
 type Dnc = { phone: string; reason: string; created: number; by_login: string }
 
 type PhoneT = { mode: "off" | "megafon" | "mock"; url: string; user: string; key_set: boolean; key_hint: string; crm_token: string
-  api: "legacy" | "v1" | null; ready: boolean; why: string; webhook_url: string; webhook_seen: number | null }
+  api: "legacy" | "v1" | "cp" | null; ready: boolean; why: string; webhook_url: string; webhook_seen: number | null
+  number: string; cp_template: string }
 const MODES: { id: PhoneT["mode"]; label: string; hint: string }[] = [
   { id: "off", label: "Выключена", hint: "агент не звонит" },
   { id: "megafon", label: "МегаФон", hint: "звонки через вашу виртуальную АТС" },
   { id: "mock", label: "Имитация", hint: "для проверки: звонки и расшифровки не настоящие" },
 ]
 
-function CopyRow({ id, label, value }: { id: string; label: string; value: string }) {
+function CopyRow({ id, label, value, multiline }: { id: string; label: string; value: string; multiline?: boolean }) {
   const copy = async () => {
     try { await navigator.clipboard.writeText(value); toast.success("Скопировано") }
     catch { toast.info("Выделите и скопируйте вручную") }
@@ -136,7 +137,10 @@ function CopyRow({ id, label, value }: { id: string; label: string; value: strin
     <div className="flex flex-col gap-1.5">
       <Label htmlFor={id}>{label}</Label>
       <div className="flex gap-2">
-        <Input id={id} readOnly value={value} onFocus={(e) => e.currentTarget.select()} className="font-mono text-xs" />
+        {multiline
+          ? <textarea id={id} readOnly value={value} rows={4} onFocus={(e) => e.currentTarget.select()}
+              className="w-full rounded-md border bg-transparent px-3 py-2 font-mono text-xs" />
+          : <Input id={id} readOnly value={value} onFocus={(e) => e.currentTarget.select()} className="font-mono text-xs" />}
         <Button type="button" variant="outline" onClick={copy} aria-label={`Скопировать: ${label}`}><Copy />Скопировать</Button>
       </div>
     </div>
@@ -147,15 +151,15 @@ function CopyRow({ id, label, value }: { id: string; label: string; value: strin
  *  Названия полей — как в кабинете ВАТС: «Настройки» → «Интеграция с CRM» → «Ваша CRM / REST API». */
 function PhoneSettings() {
   const [p, setP] = useState<PhoneT | null>(null)
-  const [f, setF] = useState({ mode: "off" as PhoneT["mode"], url: "", user: "", key: "" })
+  const [f, setF] = useState({ mode: "off" as PhoneT["mode"], url: "", user: "", key: "", number: "" })
   const [busy, setBusy] = useState<"" | "save" | "check">("")
   const [check, setCheck] = useState<{ ok: boolean; text: string } | null>(null)
-  const apply = (v: PhoneT) => { setP(v); setF({ mode: v.mode, url: v.url, user: v.user, key: "" }) }
+  const apply = (v: PhoneT) => { setP(v); setF({ mode: v.mode, url: v.url, user: v.user, key: "", number: v.number }) }
   useEffect(() => { api<PhoneT>("/phone").then(apply).catch((e) => toast.error(errText(e))) }, [])
   const save = async () => {
     setBusy("save"); setCheck(null)
     try {
-      const body: Record<string, string> = { mode: f.mode, url: f.url, user: f.user }
+      const body: Record<string, string> = { mode: f.mode, url: f.url, user: f.user, number: f.number }
       if (f.key.trim()) body.key = f.key
       apply(await api<PhoneT>("/phone", { method: "PUT", body })); toast.success("Телефония сохранена")
     } catch (e) { toast.error(errText(e)) } finally { setBusy("") }
@@ -163,18 +167,19 @@ function PhoneSettings() {
   const test = async () => {
     setBusy("check"); setCheck(null)
     try {
-      const r = await api<{ employees: number; bot_found: boolean; api: string }>("/phone/check", { method: "POST" })
-      setCheck({ ok: r.bot_found, text: r.bot_found ? `Подключено: ВАТС на связи, сотрудников ${r.employees}, бот найден.`
+      const r = await api<{ employees: number; bot_found: boolean; api: string; number?: string }>("/phone/check", { method: "POST" })
+      setCheck({ ok: r.bot_found, text: r.bot_found ? `Подключено: ВАТС на связи, сотрудников ${r.employees}, бот найден${r.number ? `, звоним с номера +${r.number}` : ""}.`
         : `ВАТС на связи (сотрудников ${r.employees}), но сотрудника «${f.user}» среди них нет — проверьте логин бота.` })
       setP(await api<PhoneT>("/phone"))
     } catch (e) { setCheck({ ok: false, text: errText(e) }) } finally { setBusy("") }
   }
   if (!p) return null
-  const dirty = f.mode !== p.mode || f.url !== p.url || f.user !== p.user || !!f.key
+  const dirty = f.mode !== p.mode || f.url !== p.url || f.user !== p.user || f.number !== p.number || !!f.key
+  const old = p.api === "legacy" || p.api === "v1"  // старый кабинет МегаФона (megapbx); новый — vatsNNN.cp.megafon.ru
   return (
     <section className="rounded-xl border bg-card p-5" id="phone">
       <h2 className="mb-1 flex items-center gap-2 font-medium"><Phone className="size-4" />Телефония</h2>
-      <p className="mb-4 text-sm text-muted-foreground">Звонки агента через виртуальную АТС МегаФон. Нужен администратор ВАТС и подключённая в кабинете «Интеграция с CRM».</p>
+      <p className="mb-4 text-sm text-muted-foreground">Звонки агента через виртуальную АТС МегаФон (кабинет vats…cp.megafon.ru). Нужен администратор ВАТС.</p>
       <div className="mb-4 flex flex-wrap gap-2" role="radiogroup" aria-label="Режим телефонии">
         {MODES.map((m) => (
           <button key={m.id} type="button" role="radio" aria-checked={f.mode === m.id} onClick={() => setF({ ...f, mode: m.id })}
@@ -186,28 +191,41 @@ function PhoneSettings() {
       {f.mode === "megafon" && (
         <div className="flex flex-col gap-5">
           <div className="flex flex-col gap-3">
-            <div className="text-sm font-medium">1. Скопируйте сюда из кабинета ВАТС</div>
+            <div className="text-sm font-medium">1. Скопируйте сюда из кабинета ВАТС («Настройки» → «Настройки API»)</div>
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="flex flex-col gap-1.5 sm:col-span-2">
-                <Label htmlFor="ph-url">Адрес кабинета ВАТС</Label>
-                <Input id="ph-url" value={f.url} placeholder="vats000000.cp.megafon.ru" onChange={(e) => setF({ ...f, url: e.target.value })} />
-                <span className="text-xs text-muted-foreground">Из строки браузера, когда вы вошли в кабинет.</span>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="ph-key">Ключ для авторизации в АТС</Label>
-                <Input id="ph-key" type="password" autoComplete="off" value={f.key} placeholder={p.key_set ? `сохранён ${p.key_hint} — оставьте пустым` : "кнопка «Скопировать ключ» в кабинете"}
+                <Label htmlFor="ph-key">Ключ API</Label>
+                <Input id="ph-key" type="password" autoComplete="off" value={f.key} placeholder={p.key_set ? `сохранён ${p.key_hint} — оставьте пустым` : "длинный ключ из «Настройки API» (начинается с eyJ…)"}
                   onChange={(e) => setF({ ...f, key: e.target.value })} />
+                <span className="text-xs text-muted-foreground">В «Настройки API» должен быть добавлен IP сервера программы.</span>
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="ph-user">Логин сотрудника-бота</Label>
-                <Input id="ph-user" value={f.user} placeholder="bot@vats000000.cp.megafon.ru" onChange={(e) => setF({ ...f, user: e.target.value })} />
+                <Label htmlFor="ph-user">Сотрудник-бот</Label>
+                <Input id="ph-user" value={f.user} placeholder="логин, ФИО или внутренний номер" onChange={(e) => setF({ ...f, user: e.target.value })} />
+                <span className="text-xs text-muted-foreground">Сотрудник ВАТС, с которого агент звонит.</span>
               </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="ph-num">Номер для исходящих</Label>
+                <Input id="ph-num" value={f.number} inputMode="tel" placeholder="необязательно — первый номер ВАТС" onChange={(e) => setF({ ...f, number: e.target.value })} />
+                <span className="text-xs text-muted-foreground">Этот номер увидит заказчик.</span>
+              </div>
+              {old && <div className="flex flex-col gap-1.5 sm:col-span-2">
+                <Label htmlFor="ph-url">Адрес кабинета ВАТС (только старый кабинет)</Label>
+                <Input id="ph-url" value={f.url} placeholder="vats000000.megapbx.ru" onChange={(e) => setF({ ...f, url: e.target.value })} />
+              </div>}
             </div>
           </div>
           <div className="flex flex-col gap-3">
-            <div className="text-sm font-medium">2. Впишите в кабинет ВАТС, в те же настройки интеграции</div>
-            <CopyRow id="ph-hook" label="Адрес вашей CRM" value={p.webhook_url} />
-            <CopyRow id="ph-crm" label="Ключ для авторизации в вашей CRM" value={p.crm_token} />
+            {old ? <>
+              <div className="text-sm font-medium">2. Впишите в кабинет ВАТС, в настройки «Интеграция с CRM»</div>
+              <CopyRow id="ph-hook" label="Адрес вашей CRM" value={p.webhook_url} />
+              <CopyRow id="ph-crm" label="Ключ для авторизации в вашей CRM" value={p.crm_token} />
+            </> : <>
+              <div className="text-sm font-medium">2. Чтобы программа узнавала, чем закончился звонок</div>
+              <p className="text-sm text-muted-foreground">В кабинете ВАТС: «Уведомления» → добавить уведомление → событие «Завершение звонка», способ — HTTP, метод POST, формат JSON. Вставьте адрес и текст ниже.</p>
+              <CopyRow id="ph-hook" label="Адрес (URL)" value={p.webhook_url} />
+              <CopyRow id="ph-tpl" label="Текст уведомления (тело запроса)" value={p.cp_template} multiline />
+            </>}
             <span className="text-xs text-muted-foreground">{p.webhook_seen ? `ВАТС уже присылала уведомления о звонках — ${ago(p.webhook_seen)}.` : "ВАТС ещё не присылала уведомлений о звонках."}</span>
           </div>
         </div>

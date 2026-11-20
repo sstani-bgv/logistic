@@ -487,7 +487,7 @@ def phone_cfg():
     """Телефония: «Настройки» программы, а где пусто — .env. Ключ API хранится только в базе на сервере."""
     return {"mode": kv_get("phone_mode") or os.environ.get("TELEPHONY") or "off",
             "url": kv_get("megafon_url") or "", "token": kv_get("megafon_key") or "", "user": kv_get("megafon_user") or "",
-            "api": kv_get("megafon_api")}
+            "api": kv_get("megafon_api"), "number": kv_get("megafon_number") or ""}
 
 
 def crm_token():
@@ -1239,6 +1239,15 @@ async def telephony_webhook(secret: str, request: Request):
             raise HTTPException(400, "невалидный JSON")
         if not isinstance(b, dict):
             raise HTTPException(400, "ожидается объект")
+        if "call_session_id" in b:  # уведомление нового кабинета МегаФона (шаблон из «Настроек»)
+            sent = str(b.get("crm_token") or "")
+            if not hmac.compare_digest(sent.encode(), crm_token().encode()):
+                raise HTTPException(403)
+            if not kv_get("megafon_webhook_seen"):
+                kv_set("megafon_webhook_seen", time.time())
+            pid, res = telephony.parse_cp(b)
+            c = await apply_call_result(pid, res, by_provider=True, background=True) if pid else None
+            return {"ok": True, "matched": bool(c)}
         key = b.get("call_id") or b.get("provider_id")  # бот адресует нашим call_id, ВАТС — своим id
         c = await apply_call_result(key, b, by_provider=not b.get("call_id"), background=True) if key else None
     else:
@@ -1259,6 +1268,7 @@ class PhoneSettings(BaseModel):
     url: str | None = Field(None, max_length=500)
     key: str | None = Field(None, max_length=500)  # пусто — оставить сохранённый
     user: str | None = Field(None, max_length=200)
+    number: str | None = Field(None, max_length=30)  # виртуальный номер для исходящих; пусто — первый из ВАТС
 
 
 
@@ -1267,7 +1277,8 @@ def phone_view(request: Request):
     key = c["token"]
     base = str(request.base_url).rstrip("/")
     return {"mode": c["mode"], "url": c["url"], "user": c["user"], "key_set": bool(key), "key_hint": f"…{key[-4:]}" if key else "",
-            "crm_token": crm_token(), "api": getattr(PHONE, "api", None), "ready": PHONE.ready, "why": PHONE.why,
+            "crm_token": crm_token(), "api": getattr(PHONE, "api", None), "number": c["number"],
+            "cp_template": telephony.cp_template(crm_token()), "ready": PHONE.ready, "why": PHONE.why,
             "webhook_url": f"{base}/api/telephony/webhook/{webhook_secret()}",
             "webhook_seen": kv_get("megafon_webhook_seen")}
 
@@ -1285,7 +1296,9 @@ async def put_phone(b: PhoneSettings, request: Request):
         raise HTTPException(400, "Адрес кабинета ВАТС — например vats000000.cp.megafon.ru (из строки браузера)")
     if b.url is not None and b.url.strip() != (kv_get("megafon_url") or ""):
         DB.execute("delete from kv where k='megafon_api'")  # новый адрес — формат API определим заново
-    for k, v in (("phone_mode", b.mode), ("megafon_url", b.url), ("megafon_user", b.user)):
+    if b.number and not re.match(r"^\+?\d{10,15}$", b.number.strip()):
+        raise HTTPException(400, "Номер для исходящих — цифрами, например 78123090000")
+    for k, v in (("phone_mode", b.mode), ("megafon_url", b.url), ("megafon_user", b.user), ("megafon_number", b.number)):
         if v is not None:
             kv_set(k, v.strip())
     if b.key:  # пустой ключ = оставить прежний

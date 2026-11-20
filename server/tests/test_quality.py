@@ -371,13 +371,13 @@ def test_taken_strips_city_suffix(monkeypatch, make_client):
 # --- телефония в «Настройках» ---
 
 def reset_phone():
-    for k in ("phone_mode", "megafon_url", "megafon_key", "megafon_user", "megafon_crm_token"):
+    for k in ("phone_mode", "megafon_url", "megafon_key", "megafon_user", "megafon_crm_token", "megafon_number", "megafon_api"):
         main.DB.execute("delete from kv where k=?", (k,))
     main.reload_phone()  # снова как задано в окружении тестов (TELEPHONY=mock)
 
 def test_phone_settings_owner_only_and_key_hidden(make_client, monkeypatch):
     owner, lg = make_client("owner"), make_client("logist", "lg2")
-    for k in ("phone_mode", "megafon_url", "megafon_key", "megafon_user", "megafon_crm_token"):
+    for k in ("phone_mode", "megafon_url", "megafon_key", "megafon_user", "megafon_crm_token", "megafon_number", "megafon_api"):
         main.DB.execute("delete from kv where k=?", (k,))
     assert lg.get("/api/phone").status_code == 403 and lg.put("/api/phone", json={"mode": "off"}).status_code == 403
     r = owner.put("/api/phone", json={"mode": "megafon", "url": "https://vats1.cp.megafon.ru/crmapi/v1",
@@ -456,3 +456,88 @@ def test_phone_view_gives_crm_key_to_copy(make_client):
     anon = TestClient(main.app)
     s = main.webhook_secret()
     assert anon.post(f"/api/telephony/webhook/{s}", data={"cmd": "event"}).status_code == 200  # без ключа — путь секретный
+
+
+# --- новый кабинет МегаФона (cp.megafon.ru, JWT, JSON-RPC) ---
+
+def cp_jwt():
+    import base64 as b64
+    enc = lambda d: b64.urlsafe_b64encode(json.dumps(d).encode()).decode().rstrip("=")
+    return f"{enc({'alg': 'RS256'})}.{enc({'iss': 'https://sso.cp.megafon.ru', 'sub': 'x'})}.sig"
+
+
+def test_cp_token_detected():
+    assert telephony.is_cp_token(cp_jwt()) and not telephony.is_cp_token("abc") and not telephony.is_cp_token("a.b.c")
+    p = telephony.MegafonProvider(None, url="", token=cp_jwt(), user="Бот", api="legacy")
+    assert p.api == "cp" and p.ready  # адрес кабинета не нужен
+    assert telephony.MegafonProvider(None, url="vats1.megapbx.ru", token="k", user="b", api="cp").api == "legacy"
+
+
+def test_cp_check_and_start(monkeypatch):
+    got = []
+
+    def handler(req):
+        b = json.loads(req.content)
+        got.append((str(req.url), b["method"], b["params"]))
+        data = {"get.employees": [{"id": 7, "login": "boss", "full_name": "Иван"},
+                                  {"id": 9, "login": "bot", "full_name": "Бот Диспетчер", "extension": {"extension_phone_number": "105"}}],
+                "get.virtual_numbers": [{"virtual_phone_number": "78123090000"}],
+                "start.employee_call": {"call_session_id": 555}}[b["method"]]
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {"data": data}})
+    monkeypatch.setattr(telephony, "TRANSPORT", httpx.MockTransport(handler))
+    p = telephony.MegafonProvider(None, token=cp_jwt(), user="105")
+    r = asyncio.run(p.check())
+    assert r["bot_found"] and r["employees"] == 2 and r["number"] == "78123090000" and r["api"] == "cp"
+    assert all(x[2]["access_token"] == cp_jwt() for x in got) and got[0][0] == telephony.CP_DATAAPI
+    assert asyncio.run(p.start({"id": 3, "phone": "+79215551234"}, {})) == "555"
+    url, method, params = got[-1]
+    assert url == telephony.CP_CALLAPI and method == "start.employee_call"
+    assert params["employee"] == {"id": 9} and params["contact"] == "79215551234" and params["external_id"] == "3"
+    assert params["virtual_phone_number"] == "78123090000"
+
+
+def test_cp_errors(monkeypatch):
+    monkeypatch.setattr(telephony, "TRANSPORT", httpx.MockTransport(lambda req: httpx.Response(
+        200, json={"jsonrpc": "2.0", "id": 1, "error": {"code": -32001, "message": "Доступ запрещён", "data": {"mnemonic": "forbidden"}}})))
+    with pytest.raises(RuntimeError, match="Доступ запрещён"):
+        asyncio.run(telephony.MegafonProvider(None, token=cp_jwt(), user="bot").check())
+    monkeypatch.setattr(telephony, "TRANSPORT", httpx.MockTransport(lambda req: httpx.Response(
+        200, json={"jsonrpc": "2.0", "id": 1, "result": {"data": [{"id": 1, "login": "other"}]}})))
+    with pytest.raises(RuntimeError, match="нет сотрудника"):
+        asyncio.run(telephony.MegafonProvider(None, token=cp_jwt(), user="bot").start({"id": 1, "phone": "+79215551234"}, {}))
+
+
+@pytest.mark.parametrize("body, want", [
+    ({"call_session_id": "555", "talk_time_duration": "74", "finish_reason": "success_finish"}, ("555", {"status": "done", "duration": 74})),
+    ({"call_session_id": 555, "talk_time_duration": "0", "finish_reason": "operator_busy"}, ("555", {"status": "busy", "duration": 0})),
+    ({"call_session_id": "555", "talk_time_duration": "", "finish_reason": "timeout"}, ("555", {"status": "no_answer", "duration": 0})),
+    ({"call_session_id": "{{call_session_id}}"}, (None, None)),
+])
+def test_parse_cp(body, want):
+    assert telephony.parse_cp(body) == want
+
+
+def test_cp_webhook_needs_crm_token(monkeypatch):
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(main, "ENV_WEBHOOK_SECRET", "s" * 32)
+    anon = TestClient(main.app)
+    main.DB.execute("insert into calls(dialog_id,phone,status,created,provider_id) values(?,?,?,?,?)",
+                    (None, "+79215551234", "ringing", time.time(), "555"))
+    url = "/api/telephony/webhook/" + "s" * 32
+    body = {"call_session_id": "555", "talk_time_duration": "0", "finish_reason": "timeout"}
+    assert anon.post(url, json=body).status_code == 403  # без ключа CRM не принимаем
+    assert anon.post(url, json={**body, "crm_token": "wrong"}).status_code == 403
+    r = anon.post(url, json={**body, "crm_token": main.crm_token()})
+    assert r.json() == {"ok": True, "matched": True}
+    assert main.q("select status from calls where provider_id='555'")[0]["status"] == "no_answer"
+    tpl = json.loads(telephony.cp_template(main.crm_token()))
+    assert tpl["call_session_id"] == "{{call_session_id}}" and tpl["crm_token"] == main.crm_token()
+
+
+def test_phone_settings_cp(make_client):
+    owner = make_client("owner")
+    r = owner.put("/api/phone", json={"mode": "megafon", "url": "", "key": cp_jwt(), "user": "bot", "number": "78123090000"})
+    v = r.json()
+    assert r.status_code == 200 and v["ready"] and v["api"] == "cp" and v["number"] == "78123090000" and "{{call_session_id}}" in v["cp_template"]
+    assert owner.put("/api/phone", json={"number": "abc"}).status_code == 400
+    reset_phone()

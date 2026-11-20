@@ -7,12 +7,27 @@
 """
 import asyncio
 import base64
+import functools
 import json
 import os
+import ssl
+from pathlib import Path
 
 import httpx
 
 FINAL = ("done", "no_answer", "busy", "failed")
+RU_ROOT = Path(__file__).parent / "certs" / "russian_trusted_root_ca.pem"  # Минцифры, SHA-256 D2:6D:2D:02:…:CF:31
+
+
+@functools.cache
+def megafon_tls():
+    """Сертификаты МегаФона выдаёт Russian Trusted Root CA (Минцифры) — его нет в обычном наборе.
+    Доверяем ему только в запросах к ВАТС, остальной трафик программы — как обычно."""
+    import certifi
+    ctx = ssl.create_default_context(cafile=certifi.where())
+    if RU_ROOT.exists():
+        ctx.load_verify_locations(cafile=str(RU_ROOT))
+    return ctx
 TRANSPORT = None  # тесты подменяют сеть (httpx.MockTransport)
 
 
@@ -128,7 +143,7 @@ class MegafonProvider:
     async def _send(self, method, path, data=None, api=None):
         api = api or self.api
         try:
-            async with httpx.AsyncClient(timeout=20, transport=TRANSPORT) as c:
+            async with httpx.AsyncClient(timeout=20, transport=TRANSPORT, verify=megafon_tls()) as c:
                 if api == "v1":
                     r = await c.request(method, self.base + path, data=data, headers={"X-API-KEY": self.token})
                 else:
@@ -150,7 +165,7 @@ class MegafonProvider:
         """JSON-RPC нового кабинета; ключ — в params.access_token."""
         body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": {"access_token": self.token, **(params or {})}}
         try:
-            async with httpx.AsyncClient(timeout=20, transport=TRANSPORT) as c:
+            async with httpx.AsyncClient(timeout=20, transport=TRANSPORT, verify=megafon_tls()) as c:
                 r = await c.post(url, json=body)
         except httpx.HTTPError as e:
             raise RuntimeError(f"ВАТС не отвечает ({type(e).__name__}) — IP сервера должен быть в «Настройки API» кабинета, "

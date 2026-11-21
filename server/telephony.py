@@ -245,7 +245,8 @@ class MegafonProvider:
                 raise RuntimeError("В ВАТС нет виртуального номера для исходящих звонков")
             self._emp = r
             d = await self._rpc(CP_CALLAPI, "start.employee_call", {
-                "first_call": "employee", "switch_at_once": True, "virtual_phone_number": r["number"],
+                # first_call=contact: сначала дозвон до заказчика, снял трубку — ВАТС зовёт бота (агент не говорит в гудки)
+                "first_call": "contact", "switch_at_once": True, "virtual_phone_number": r["number"],
                 "contact": phone, "external_id": str(call["id"]), "direction": "out",
                 "employee": {"id": r["bot"]["id"]}})
             return str((d or {}).get("call_session_id") or "")

@@ -121,7 +121,7 @@ type Dnc = { phone: string; reason: string; created: number; by_login: string }
 
 type PhoneT = { mode: "off" | "megafon" | "mock"; url: string; user: string; key_set: boolean; key_hint: string; crm_token: string
   api: "legacy" | "v1" | "cp" | null; ready: boolean; why: string; webhook_url: string; webhook_seen: number | null
-  number: string; cp_template: string }
+  number: string; cp_template: string; sip_server: string; sip_login: string; sip_set: boolean; sip_state: string }
 const MODES: { id: PhoneT["mode"]; label: string; hint: string }[] = [
   { id: "off", label: "Выключена", hint: "агент не звонит" },
   { id: "megafon", label: "МегаФон", hint: "звонки через вашу виртуальную АТС" },
@@ -151,16 +151,17 @@ function CopyRow({ id, label, value, multiline }: { id: string; label: string; v
  *  Названия полей — как в кабинете ВАТС: «Настройки» → «Интеграция с CRM» → «Ваша CRM / REST API». */
 function PhoneSettings() {
   const [p, setP] = useState<PhoneT | null>(null)
-  const [f, setF] = useState({ mode: "off" as PhoneT["mode"], url: "", user: "", key: "", number: "" })
+  const [f, setF] = useState({ mode: "off" as PhoneT["mode"], url: "", user: "", key: "", number: "", sip_server: "", sip_login: "", sip_password: "" })
   const [busy, setBusy] = useState<"" | "save" | "check">("")
   const [check, setCheck] = useState<{ ok: boolean; text: string } | null>(null)
-  const apply = (v: PhoneT) => { setP(v); setF({ mode: v.mode, url: v.url, user: v.user, key: "", number: v.number }) }
+  const apply = (v: PhoneT) => { setP(v); setF({ mode: v.mode, url: v.url, user: v.user, key: "", number: v.number, sip_server: v.sip_server, sip_login: v.sip_login, sip_password: "" }) }
   useEffect(() => { api<PhoneT>("/phone").then(apply).catch((e) => toast.error(errText(e))) }, [])
   const save = async () => {
     setBusy("save"); setCheck(null)
     try {
-      const body: Record<string, string> = { mode: f.mode, url: f.url, user: f.user, number: f.number }
+      const body: Record<string, string> = { mode: f.mode, url: f.url, user: f.user, number: f.number, sip_server: f.sip_server, sip_login: f.sip_login }
       if (f.key.trim()) body.key = f.key
+      if (f.sip_password) body.sip_password = f.sip_password
       apply(await api<PhoneT>("/phone", { method: "PUT", body })); toast.success("Телефония сохранена")
     } catch (e) { toast.error(errText(e)) } finally { setBusy("") }
   }
@@ -174,7 +175,7 @@ function PhoneSettings() {
     } catch (e) { setCheck({ ok: false, text: errText(e) }) } finally { setBusy("") }
   }
   if (!p) return null
-  const dirty = f.mode !== p.mode || f.url !== p.url || f.user !== p.user || f.number !== p.number || !!f.key
+  const dirty = f.mode !== p.mode || f.url !== p.url || f.user !== p.user || f.number !== p.number || f.sip_server !== p.sip_server || f.sip_login !== p.sip_login || !!f.sip_password || !!f.key
   const old = p.api === "legacy" || p.api === "v1"  // старый кабинет МегаФона (megapbx); новый — vatsNNN.cp.megafon.ru
   return (
     <section className="rounded-xl border bg-card p-5" id="phone">
@@ -214,6 +215,26 @@ function PhoneSettings() {
                 <Input id="ph-url" value={f.url} placeholder="vats000000.megapbx.ru" onChange={(e) => setF({ ...f, url: e.target.value })} />
               </div>}
             </div>
+          </div>
+          <div className="flex flex-col gap-3">
+            <div className="text-sm font-medium">Телефон робота (SIP-линия сотрудника-бота)</div>
+            <p className="text-sm text-muted-foreground">Через эту линию агент говорит с заказчиком. В кабинете ВАТС: сотрудник-бот → его SIP-телефон → сервер, логин и пароль.</p>
+            <div className="grid gap-4 sm:grid-cols-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="ph-sips">Сервер SIP</Label>
+                <Input id="ph-sips" value={f.sip_server} placeholder="vats000000.cp.megafon.ru" onChange={(e) => setF({ ...f, sip_server: e.target.value })} />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="ph-sipl">Логин SIP</Label>
+                <Input id="ph-sipl" value={f.sip_login} placeholder="705@vats000000.cp.megafon.ru" onChange={(e) => setF({ ...f, sip_login: e.target.value })} />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="ph-sipp">Пароль SIP</Label>
+                <Input id="ph-sipp" type="password" autoComplete="off" value={f.sip_password} placeholder={p.sip_set ? "сохранён — оставьте пустым" : "из кабинета ВАТС"}
+                  onChange={(e) => setF({ ...f, sip_password: e.target.value })} />
+              </div>
+            </div>
+            <span className={`text-xs ${p.sip_state === "подключена" ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground"}`}>Линия: {p.sip_state}</span>
           </div>
           <div className="flex flex-col gap-3">
             {old ? <>

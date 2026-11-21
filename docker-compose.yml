@@ -18,6 +18,8 @@ services:
       - data:/data            # data.db и записи звонков (recordings/)
       - backups:/backups:ro   # только отметки last_ok/last_error — показать владельцу, что бэкап жив
     expose: ["8010"]
+    # телефон робота (sip.py): SIP-линия сотрудника-бота и звук разговора (RTP). Порты > 1024 — root не нужен
+    ports: ["5070:5070/udp", "40000-40019:40000-40019/udp"]
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
 

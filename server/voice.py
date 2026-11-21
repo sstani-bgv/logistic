@@ -44,7 +44,7 @@ def cfg():
 
 
 def session(instructions, c):
-    pcm = {"type": "audio/pcm", "rate": RATE}
+    pcm = {"type": "audio/pcm", "rate": c.get("rate", RATE)}  # браузер 44,1 кГц, телефонная линия 16 кГц
     return {"type": "realtime", "output_modalities": ["audio"], "instructions": instructions,
             "audio": {"input": {"format": pcm,
                                 "turn_detection": {"type": "server_vad", "threshold": 0.5,
@@ -159,7 +159,7 @@ async def talk(recv, send, instructions, c=None, greeting=None):
                         said = 0.0
                     bye_at = None  # заговорил снова или собеседник перебил — разговор продолжается
                 elif t == "response.output_audio.delta":
-                    said += len(ev.get("delta") or "") * 3 / 4 / (2 * RATE)
+                    said += len(ev.get("delta") or "") * 3 / 4 / (2 * c.get("rate", RATE))
                 elif (t == "response.done" and (ev.get("response") or {}).get("status", "completed") == "completed"
                       and len(turns) > n and turns[-1]["who"] == "Агент" and BYE.search(turns[-1]["text"])):
                     bye_at = time.monotonic() + said + 1.5

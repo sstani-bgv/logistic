@@ -28,6 +28,7 @@ import ati
 import auth
 import calls
 import fleet
+import sip
 import telephony
 import voice
 from urllib.parse import urlparse
@@ -502,7 +503,67 @@ def crm_token():
 def reload_phone():
     global PHONE
     PHONE = telephony.make(apply_call_result, phone_cfg())
+    restart_line()
     return PHONE
+
+
+# ---------- телефон робота: SIP-линия сотрудника-бота (sip.py) ----------
+LINE = None  # sip.Phone, пока режим «МегаФон» и линия настроена
+LINE_ANSWER_SEC = 180  # ВАТС зовёт бота, когда заказчик снял трубку; звонок, поставленный раньше, — не наш
+
+
+def line_cfg():
+    e = sip.cfg_from_env()
+    return {**e, "server": kv_get("sip_server") or e["server"], "login": kv_get("sip_login") or e["login"],
+            "password": kv_get("sip_password") or e["password"]}
+
+
+def pending_line_call():
+    """Звонок, ради которого ВАТС сейчас зовёт бота: последний поставленный и ещё не начатый."""
+    r = q("select * from calls where status in ('queued','ringing') and coalesce(started, created)>=? "
+          "order by coalesce(started, created) desc limit 1", time.time() - LINE_ANSWER_SEC)
+    return r[0] if r else None
+
+
+async def line_talk(line_call):
+    """Заказчик на связи: агент говорит голосом Yandex, итог — в звонок и переписку, как от любой телефонии."""
+    c = pending_line_call()
+    if not c:
+        return
+    d = q("select * from dialogs where id=?", c["dialog_id"])
+    if not d:
+        return
+    DB.execute("update calls set status='talking' where id=?", (c["id"],))
+    vc = voice.cfg()
+    reason, turns = "error", []
+    try:
+        reason, turns, _ = await voice.talk(line_call.recv, line_call.send, instructions_for_call(d[0]),
+                                            {**vc, "rate": sip.VOICE_RATE}, greeting=greeting_for_call(d[0]))
+    except Exception as e:
+        log(f"Звонок #{c['id']}: голос агента не подключился — {voice.explain(e)}", "error")
+    secs = round(line_call.seconds)
+    heard = any(t["who"] != "Агент" for t in turns)
+    log(f"Звонок #{c['id']} завершён: {secs} с, {reason}", "agent")
+    await apply_call_result(c["id"], {"status": "done" if heard or secs > 5 else "failed", "duration": secs,
+                                      "transcript": voice.transcript(turns) if turns else None})
+
+
+def restart_line():
+    """Поднять/перезапустить линию по текущим настройкам (только в режиме «МегаФон»)."""
+    global LINE
+    if LINE:
+        LINE.stop()
+        LINE = None
+    lc = line_cfg()
+    if PHONE.mode != "megafon" or not (lc["server"] and lc["login"] and lc["password"]):
+        return
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return  # ещё нет цикла (импорт) — поднимет lifespan
+    LINE = sip.Phone(lc["server"], lc["login"], lc["password"], line_talk, public_ip=lc["public_ip"], port=lc["port"],
+                     rtp_ports=lc["rtp_ports"], max_calls=CALL_LINES, accept=lambda m: pending_line_call() is not None)
+    LINE.start()
 MAX_RECORDING = 50 * 1024 * 1024
 STALE_CALL_MIN = 20  # без итога от телефонии дольше — считаем звонок несостоявшимся
 
@@ -733,9 +794,12 @@ async def lifespan(app):
         spawn(agent_step(d))
     await reap_stale_calls()
     tasks = [asyncio.create_task(monitor()), asyncio.create_task(poll_dialogs()), asyncio.create_task(call_loop())]
+    restart_line()
     yield
     for t in tasks:
         t.cancel()
+    if LINE:
+        LINE.stop()
 
 
 app = FastAPI(lifespan=lifespan, dependencies=[Depends(auth.make_guard(DB))],
@@ -1269,6 +1333,9 @@ class PhoneSettings(BaseModel):
     key: str | None = Field(None, max_length=500)  # пусто — оставить сохранённый
     user: str | None = Field(None, max_length=200)
     number: str | None = Field(None, max_length=30)  # виртуальный номер для исходящих; пусто — первый из ВАТС
+    sip_server: str | None = Field(None, max_length=200)  # линия робота (SIP): сервер, логин, пароль из кабинета ВАТС
+    sip_login: str | None = Field(None, max_length=200)
+    sip_password: str | None = Field(None, max_length=200)  # пусто — оставить сохранённый
 
 
 
@@ -1278,7 +1345,9 @@ def phone_view(request: Request):
     base = str(request.base_url).rstrip("/")
     return {"mode": c["mode"], "url": c["url"], "user": c["user"], "key_set": bool(key), "key_hint": f"…{key[-4:]}" if key else "",
             "crm_token": crm_token(), "api": getattr(PHONE, "api", None), "number": c["number"],
-            "cp_template": telephony.cp_template(crm_token()), "ready": PHONE.ready, "why": PHONE.why,
+            "cp_template": telephony.cp_template(crm_token()),
+            "sip_server": line_cfg()["server"], "sip_login": line_cfg()["login"], "sip_set": bool(line_cfg()["password"]),
+            "sip_state": LINE.state if LINE else ("не настроена" if not line_cfg()["login"] else "не подключена"), "ready": PHONE.ready, "why": PHONE.why,
             "webhook_url": f"{base}/api/telephony/webhook/{webhook_secret()}",
             "webhook_seen": kv_get("megafon_webhook_seen")}
 
@@ -1303,6 +1372,11 @@ async def put_phone(b: PhoneSettings, request: Request):
             kv_set(k, v.strip())
     if b.key:  # пустой ключ = оставить прежний
         kv_set("megafon_key", b.key.strip())
+    for k, v in (("sip_server", b.sip_server), ("sip_login", b.sip_login)):
+        if v is not None:
+            kv_set(k, v.strip())
+    if b.sip_password:
+        kv_set("sip_password", b.sip_password)
     reload_phone()
     auth.record(DB, "phone_settings", None, f"режим {phone_cfg()['mode']}, бот {phone_cfg()['user'] or '—'}")
     return phone_view(request)

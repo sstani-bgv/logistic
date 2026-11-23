@@ -51,9 +51,14 @@ def test_chat_success_does_not_clear_search_failure():
 
 
 def test_empty_fleet_is_visible_even_with_valid_token():
+    main.kv_set("search_profile", json.dumps({"default_mode": "trucks"}))
     main.mark("ati", True)
     assert main.health()["search_trucks"] == 0
     assert any("Добавьте машину" in problem["text"] for problem in main.health()["problems"])
+
+
+def test_general_search_does_not_require_fleet_warning():
+    assert not any("Добавьте машину" in problem["text"] for problem in main.health()["problems"])
 
 
 def test_backup_three_day_gap_is_healthy(tmp_path, monkeypatch):
@@ -105,6 +110,21 @@ def test_megafon_results_are_limited_to_our_finished_calls(monkeypatch):
                {"id": 2, "provider_id": "124", "created": time.time()}]
     results = asyncio.run(provider.completed_calls(pending))
     assert results == [(1, {"status": "done", "duration": 12, "recording_url": "https://media.comagic.ru/123/record"})]
+
+
+def test_phone_check_preserves_registered_line(monkeypatch, make_client):
+    provider = telephony.MegafonProvider(None, url="https://vats.example.ru", token="key", user="bot")
+
+    async def check():
+        return {"employees": 1, "bot_found": True, "api": "cp"}
+
+    def unexpected_restart():
+        raise AssertionError("Проверка API не должна перезапускать SIP-линию")
+
+    monkeypatch.setattr(provider, "check", check)
+    monkeypatch.setattr(main, "PHONE", provider)
+    monkeypatch.setattr(main, "reload_phone", unexpected_restart)
+    assert make_client("owner").post("/api/phone/check").status_code == 200
 
 
 def test_llm_not_configured_and_failing(monkeypatch):

@@ -55,13 +55,14 @@ async def check_ati():
     truck = {"city_id": 1, "radius": 100, "body_mask": 1}  # СПб — проверка доступа к поиску
     await step("поиск грузов", _count(ati.search(truck, 1)))
     await step("мессенджер (доступ)", _chats(ati))
-    print("Тариф даёт всё нужное" if ok else "Не хватает доступа — проверьте тариф/токен АТИ")
+    print("Проверки API пройдены" if ok else "Не хватает доступа — проверьте разрешения интеграции ATI")
     return ok
 
 
 async def _count(coro):
     loads, total = await coro
-    return f"{total} грузов в выдаче"
+    access = "; публичная выдача, контакты и ставки скрыты" if any(load.get("publicOnly") for load in loads) else ""
+    return f"{total} грузов в выдаче{access}"
 
 
 async def _chats(ati):

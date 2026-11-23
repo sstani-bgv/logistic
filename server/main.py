@@ -739,7 +739,8 @@ async def fetch_recording(cid, url):
         await asyncio.to_thread(safe_recording_url, url)
         RECORDINGS.mkdir(parents=True, exist_ok=True)
         tmp, size = f.with_suffix(".part"), 0
-        async with httpx.AsyncClient(timeout=60, follow_redirects=False) as c:
+        verify = telephony.megafon_tls() if (httpx.URL(url).host or "").endswith(".cp.megafon.ru") else True
+        async with httpx.AsyncClient(timeout=60, follow_redirects=False, verify=verify) as c:
             async with c.stream("GET", url) as r:
                 r.raise_for_status()
                 with open(tmp, "wb") as out:
@@ -989,7 +990,8 @@ def health(now=None):
     if search["ok"] is False:
         add("ati", search["err"])
     trucks = q("select count(*) n from trucks where active=1")[0]["n"]
-    if not trucks:
+    search_mode = json.loads(kv_get("search_profile") or "{}").get("default_mode", "general")
+    if not trucks and search_mode == "trucks":
         add("ati", "Добавьте машину для автоматического подбора. Общий поиск доступен в разделе «Грузы».", "warn")
     last = q("select max(ts) t from scans")[0]["t"] or 0
     if trucks and last and now - last > 3 * max(60, int(st["scan_minutes"]) * 60) + 120 and a["ok"] is not False:
@@ -1476,7 +1478,6 @@ async def check_phone():
         mark("phone", False, e)
         raise HTTPException(502, str(e)) from e
     kv_set("megafon_api", r["api"])
-    reload_phone()
     mark("phone", True)
     return r
 

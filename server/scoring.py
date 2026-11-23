@@ -73,7 +73,7 @@ def score(load, truck, rules, settings):
         add(f"Высота груза {h} м > кузова {truck['height']} м", kind="block")
     if (cargo.get("weight") or 0) > truck["capacity"]:
         add(f"Вес {cargo['weight']} т > {truck['capacity']} т", kind="block")
-    if int(load["truck"].get("carTypesBitSum") or 0) & truck["body_mask"] == 0:
+    if truck["body_mask"] and int(load["truck"].get("carTypesBitSum") or 0) & truck["body_mask"] == 0:
         add("Кузов не подходит", kind="block")
 
     # ставка
@@ -82,7 +82,7 @@ def score(load, truck, rules, settings):
     per_km = net / (dist + dead) if net else None
     mt = MONEY.get(rate.get("moneyType"), "—")
     if per_km is None:
-        add("Ставка «запрос» — агент уточнит", -8)
+        add("Ставка скрыта АТИ — откройте груз в своём аккаунте" if load.get("publicOnly") else "Ставка «запрос» — агент уточнит", -8)
     else:
         target = settings["min_rate_km"]
         if per_km >= target * 1.15:

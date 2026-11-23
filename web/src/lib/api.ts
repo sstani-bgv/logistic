@@ -7,6 +7,7 @@ export type Firm = {
   rating?: { score: number }; contacts?: { id: number; name: string; phones?: { number: string }[] }[]
 }
 export type Raw = {
+  publicOnly?: boolean
   id: string; loadNumber?: string; note?: string; addDate: string; changeDate?: string; similarCount?: number
   route: { distance: number }
   load: { weight: number; volume: number; height: number; cargoType: string }
@@ -41,7 +42,7 @@ export type Stats = {
   health?: Health
 }
 export type Problem = { part: "ati" | "llm" | "phone" | "backup" | "agent"; text: string; level: "error" | "warn" | "info" }
-export type Health = { problems: Problem[]; ati_ok: boolean | null; ati_last_scan: number; telephony: "off" | "mock" | "megafon" }
+export type Health = { problems: Problem[]; ati_ok: boolean | null; ati_search_ok?: boolean | null; search_trucks?: number; ati_last_scan: number; telephony: "off" | "mock" | "megafon" }
 
 export type DialogPatchResult = { ok: boolean; truck?: Truck | null }
 export type Role = "owner" | "logist"

@@ -43,6 +43,26 @@ def parts(h=None):
 
 # --- состояние систем ---
 
+def test_chat_success_does_not_clear_search_failure():
+    main.mark("ati_search", False, "поиск запрещён (403)")
+    main.mark("ati", True)
+    assert main.health()["ati_search_ok"] is False
+    assert "поиск запрещён" in parts()[("ati", "error")]
+
+
+def test_empty_fleet_is_visible_even_with_valid_token():
+    main.mark("ati", True)
+    assert main.health()["search_trucks"] == 0
+    assert any("Добавьте машину" in problem["text"] for problem in main.health()["problems"])
+
+
+def test_backup_three_day_gap_is_healthy(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "BACKUP_DIR", str(tmp_path))
+    monkeypatch.setenv("BACKUP_MAX_AGE_HOURS", "74")
+    (tmp_path / "last_ok").write_text(str(time.time() - 70 * 3600))
+    assert main.backup_state() is None
+
+
 def test_ati_401_is_visible(monkeypatch):
     t = truck()
     resp = httpx.Response(401, request=httpx.Request("POST", "https://loads.ati.su/x"))
@@ -59,6 +79,32 @@ def test_ati_401_is_visible(monkeypatch):
     asyncio.run(once())
     assert t and "отклонила токен (401)" in parts()[("ati", "error")]
     assert main.health()["ati_ok"] is False
+
+
+def test_phone_accepts_long_api_key_without_returning_secret(make_client):
+    key = "x" * 2500
+    response = make_client("owner").put("/api/phone", json={"mode": "off", "key": key})
+    assert response.status_code == 200 and response.json()["key_set"]
+    assert key not in response.text
+
+
+def test_megafon_results_are_limited_to_our_finished_calls(monkeypatch):
+    provider = telephony.MegafonProvider(None, url="https://vats.example.ru", token="key", user="bot")
+    provider.api = "cp"
+
+    async def rpc(url, method, params):
+        assert method == "get.calls_report"
+        assert params["filter"]["value"] == [123, 124]
+        return [{"id": 123, "finish_time": "2026-11-23 12:01:00", "talk_duration": 12,
+                 "full_record_file_link": "https://media.comagic.ru/123/record"},
+                {"id": 124, "finish_time": None},
+                {"id": 999, "finish_time": "2026-11-23 12:00:00"}]
+
+    monkeypatch.setattr(provider, "_rpc", rpc)
+    pending = [{"id": 1, "provider_id": "123", "created": time.time()},
+               {"id": 2, "provider_id": "124", "created": time.time()}]
+    results = asyncio.run(provider.completed_calls(pending))
+    assert results == [(1, {"status": "done", "duration": 12, "recording_url": "https://media.comagic.ru/123/record"})]
 
 
 def test_llm_not_configured_and_failing(monkeypatch):
@@ -275,7 +321,7 @@ def test_backup_and_restore_scripts(tmp_path):
     sh = ROOT / "deploy" / "backup"
     r = subprocess.run(["bash", sh / "backup.sh"], env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-    assert (out / "last_ok").is_file() and "внешнее хранилище не настроено" in (out / "last_error").read_text()
+    assert (out / "last_ok").is_file() and not (out / "last_error").exists()
     assert list((out / "db").glob("data-*.db.gz"))
 
     db = sqlite3.connect(data / "data.db")

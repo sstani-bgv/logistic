@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react"
+import SearchPanel from "@/components/SearchPanel"
 import { toast } from "sonner"
 import { CheckCircle2, Copy, Loader2, Phone, Plus, Save, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -58,6 +59,7 @@ export default function SettingsPage() {
         </div>
         <Button onClick={save} disabled={busy}><Save />Сохранить</Button>
       </div>
+      <SearchPanel settings />
       {GROUPS.map((g) => (
         <section key={g.title} className="rounded-xl border bg-card p-5">
           <h2 className="mb-4 font-medium">{g.title}</h2>
@@ -234,7 +236,7 @@ function PhoneSettings() {
       {f.mode === "megafon" && (
         <div className="flex flex-col gap-5">
           <div className="flex flex-col gap-3">
-            <div className="text-sm font-medium">1. Скопируйте сюда из кабинета ВАТС («Настройки» → «Настройки API»)</div>
+            <div className="text-sm font-medium">{p.key_set ? "Подключение к ВАТС" : "Ключ API из кабинета ВАТС"}</div>
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="flex flex-col gap-1.5 sm:col-span-2">
                 <Label htmlFor="ph-key">Ключ API</Label>
@@ -284,12 +286,10 @@ function PhoneSettings() {
               <CopyRow id="ph-hook" label="Адрес вашей CRM" value={p.webhook_url} />
               <CopyRow id="ph-crm" label="Ключ для авторизации в вашей CRM" value={p.crm_token} />
             </> : <>
-              <div className="text-sm font-medium">2. Чтобы программа узнавала, чем закончился звонок</div>
-              <p className="text-sm text-muted-foreground">В кабинете ВАТС: «Уведомления» → добавить уведомление → событие «Завершение звонка», способ — HTTP, метод POST, формат JSON. Вставьте адрес и текст ниже.</p>
-              <CopyRow id="ph-hook" label="Адрес (URL)" value={p.webhook_url} />
-              <CopyRow id="ph-tpl" label="Текст уведомления (тело запроса)" value={p.cp_template} multiline />
+              <div className="text-sm font-medium">Итоги звонков</div>
+              <p className="text-sm text-muted-foreground">Программа автоматически получает итог, длительность и запись своих звонков через API МегаФона каждую минуту.</p>
             </>}
-            <span className="text-xs text-muted-foreground">{p.webhook_seen ? `ВАТС уже присылала уведомления о звонках — ${ago(p.webhook_seen)}.` : "ВАТС ещё не присылала уведомлений о звонках."}</span>
+            {old && <span className="text-xs text-muted-foreground">{p.webhook_seen ? `ВАТС уже присылала уведомления о звонках — ${ago(p.webhook_seen)}.` : "ВАТС ещё не присылала уведомлений о звонках."}</span>}
           </div>
         </div>
       )}

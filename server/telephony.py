@@ -12,6 +12,7 @@ import json
 import os
 import ssl
 from pathlib import Path
+from datetime import datetime, timedelta
 
 import httpx
 
@@ -232,6 +233,26 @@ class MegafonProvider:
             return {"employees": len(items), "bot_found": self.user.lower() in names or short in names, "api": api}
         raise RuntimeError("По этому адресу нет API ВАТС — вставьте адрес кабинета из строки браузера "
                            "и проверьте, что в кабинете включена «Интеграция с CRM»") from last
+
+    async def completed_calls(self, pending):
+        """Итоги своих звонков из Data API, в том числе когда уведомление ВАТС не настроено."""
+        by_provider = {str(call["provider_id"]): call for call in pending if str(call.get("provider_id") or "").isdigit()}
+        if self.api != "cp" or not by_provider:
+            return []
+        earliest = min(call["created"] for call in by_provider.values())
+        rows = await self._rpc(CP_DATAAPI, "get.calls_report", {
+            "date_from": datetime.fromtimestamp(earliest - 300).strftime("%Y-%m-%d %H:%M:%S"),
+            "date_till": (datetime.now() + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S"),
+            "limit": 100, "filter": {"field": "id", "operator": "in", "value": [int(key) for key in by_provider]},
+            "fields": ["id", "finish_time", "talk_duration", "finish_reason", "full_record_file_link"]})
+        results = []
+        for row in rows or []:
+            call = by_provider.get(str(row.get("id")))
+            if call and row.get("finish_time"):
+                _, result = parse_cp({"call_session_id": row["id"], "talk_time_duration": row.get("talk_duration"),
+                                      "finish_reason": row.get("finish_reason"), "record_url": row.get("full_record_file_link")})
+                results.append((call["id"], result))
+        return results
 
     async def start(self, call, context):
         if not self.ready:

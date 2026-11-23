@@ -14,9 +14,10 @@ services:
       LLM_PROXY_MODE: ""
       TELEPHONY: ${TELEPHONY:-off}   # пока нет ВАТС — звонков нет (mock на проде не нужен: расшифровки выдуманные)
       BACKUP_DIR: /backups
+      BACKUP_MAX_AGE_HOURS: "74"
     volumes:
       - data:/data            # data.db и записи звонков (recordings/)
-      - backups:/backups:ro   # только отметки last_ok/last_error — показать владельцу, что бэкап жив
+      - ./backups:/backups:ro
     expose: ["8010"]
     # телефон робота (sip.py): SIP-линия сотрудника-бота и звук разговора (RTP). Порты > 1024 — root не нужен
     ports: ["5070:5070/udp", "40000-40019:40000-40019/udp"]
@@ -46,12 +47,13 @@ services:
         required: false
     environment:
       TZ: Europe/Moscow
-      BACKUP_AT: ${BACKUP_AT:-03:30}
+      BACKUP_AT: ${BACKUP_AT:-00:00}
+      BACKUP_DAYS: ${BACKUP_DAYS:-1,3,5}
       KEEP_DAYS: ${KEEP_DAYS:-14}
     security_opt: ["no-new-privileges:true"]
     volumes:
       - data:/data
-      - backups:/backups
+      - ./backups:/backups
 
   # Голос (ТЗ 2.2): релей Yandex Realtime уже внутри app (server/voice.py, тестовый звонок из браузера).
   # После доступа к ВАТС SIP-адаптер (регистрация сотрудника-бота, 8 кГц ⇄ 44,1 кГц) станет отдельным сервисом

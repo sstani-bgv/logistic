@@ -3,11 +3,11 @@ import os
 import httpx
 
 TOKEN = os.environ.get("ATI_TOKEN", "")  # без токена модуль импортируется (тесты, мок), запросы вернут 401
-# ATI требует User-Agent интегратора: ati_integrator_<ID приложения клиента>
+# ATI требует код фирмы интегратора в User-Agent. client_id приложения используется при выдаче токена.
 CLIENT_ID_SET = bool(os.environ.get("ATI_CLIENT_ID"))
 CLIENT_ID = os.environ.get("ATI_CLIENT_ID") or "5464422"  # без своего ID — ID интегратора (видно в health и check-ati)
 HEAD = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/json",
-        "User-Agent": f"ati_integrator_{CLIENT_ID}"}
+        "User-Agent": f"ati_integrator_{os.environ.get('ATI_INTEGRATOR_ID', '5464422')}"}
 client = httpx.AsyncClient(headers=HEAD, timeout=30, follow_redirects=True)
 
 
@@ -18,10 +18,17 @@ async def search(truck, page):
                        "sorting_type": 2, "extra_params": 0}}
     if truck.get("to_city_id"):
         body["filter"]["to"] = {"id": truck["to_city_id"], "type": 2, "radius": 150}
-    r = await client.post("https://loads.ati.su/webapi/v1.0/loads/search", json=body)
+    if not truck["body_mask"]:
+        body["filter"].pop("truck_type")
+    if truck.get("capacity"):
+        body["filter"]["weight"] = {"max": truck["capacity"]}
+    r = await client.post("https://loads.ati.su/webapi/public/v1.0/loads/search", json=body)
     r.raise_for_status()
     j = r.json()
-    return j.get("loads", []), j.get("totalItems", 0)
+    loads = j.get("loads", [])
+    for load in loads:
+        load["publicOnly"] = j.get("isUserAuthorized") is False
+    return loads, j.get("totalItems", 0)
 
 
 async def me():

@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { api, errText, usePoll, rub, ddmm, ago, atiLink, type Load, type Truck } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import SearchPanel, { type SearchResult } from "@/components/SearchPanel"
 
 const VIEWS = [
   { id: "relevant", label: "Подходят" },
@@ -19,6 +20,8 @@ const VIEWS = [
 ]
 
 export default function LoadsPage() {
+  const [mode, setMode] = useState<"general" | "trucks">("general")
+  const [general, setGeneral] = useState<SearchResult | null>(null)
   const [view, setView] = useState("relevant")
   const [truck, setTruck] = useState("all")
   const { data: loads, reload } = usePoll<Load[]>(`/loads?view=${view}${truck !== "all" ? `&truck=${truck}` : ""}`, 6000)
@@ -32,9 +35,9 @@ export default function LoadsPage() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Грузы с биржи АТИ</h1>
-          <p className="text-sm text-muted-foreground">Ассистент сам смотрит биржу под каждую свободную машину и оставляет только то, что подходит по вашим правилам.</p>
+          <p className="text-sm text-muted-foreground">{mode === "general" ? "Настройте направление и кузов. Грузы на странице упорядочены по оценке ассистента." : "Ассистент сам смотрит биржу под каждую свободную машину и оставляет подходящие грузы."}</p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        {mode === "trucks" && <div className="flex flex-wrap gap-2">
           <Select value={truck} onValueChange={setTruck}>
             <SelectTrigger className="w-56 bg-card"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -45,15 +48,24 @@ export default function LoadsPage() {
           <Tabs value={view} onValueChange={setView}>
             <TabsList>{VIEWS.map((v) => <TabsTrigger key={v.id} value={v.id}>{v.label}</TabsTrigger>)}</TabsList>
           </Tabs>
-        </div>
+        </div>}
       </div>
 
-      {!loads ? <Loader2 className="mx-auto size-6 animate-spin text-muted-foreground" /> :
-        loads.length === 0 ? <div className="rounded-xl border border-dashed bg-card p-10 text-center text-sm text-muted-foreground">Пока пусто — ассистент проходит биржу каждые несколько минут.</div> :
+      <Tabs value={mode} onValueChange={(value) => setMode(value as "general" | "trucks")}>
+        <TabsList><TabsTrigger value="general">Общий поиск</TabsTrigger><TabsTrigger value="trucks">Под мои машины</TabsTrigger></TabsList>
+      </Tabs>
+      <div className={mode === "general" ? "" : "hidden"}><SearchPanel onResults={setGeneral} onDefaultMode={setMode} /></div>
+      {mode === "general" && <>
+        {general?.public_only && <p className="text-sm text-muted-foreground">АТИ показывает публичные объявления. Контакты и ставки доступны при открытии груза в аккаунте АТИ.</p>}
+        {!general ? <div role="status" className="text-sm text-muted-foreground">Задайте фильтры и нажмите «Найти грузы».</div> : general.loads.length === 0 ? <p className="text-sm text-muted-foreground">По этим фильтрам грузов нет. Попробуйте увеличить радиус или выбрать другой кузов.</p> : general.loads.map((load) => <LoadCard key={load.id} l={load} view="all" general onReject={() => {}} onDelegate={() => {}} />)}
+      </>}
+
+      {mode === "trucks" && (!loads ? <Loader2 className="mx-auto size-6 animate-spin text-muted-foreground" /> :
+        loads.length === 0 ? <div className="rounded-xl border border-dashed bg-card p-10 text-center text-sm text-muted-foreground">{trucks?.length === 0 ? "Добавьте машину в разделе «Машины», чтобы запустить поиск грузов." : "Подходящих грузов пока нет. Ассистент повторяет поиск каждые несколько минут."}</div> :
           <div className="flex flex-col gap-3">
             {loads.map((l) => <LoadCard key={l.id} l={l} truck={tmap[l.truck_id]} view={view}
               onReject={() => setRejecting(l)} onDelegate={() => setDelegating(l)} />)}
-          </div>}
+          </div>)}
 
       <RejectDialog load={rejecting} onClose={() => setRejecting(null)} onDone={reload} />
       <DelegateDialog load={delegating} onClose={() => setDelegating(null)} onDone={reload} />
@@ -74,7 +86,7 @@ function ScoreRing({ v, filtered }: { v: number; filtered: boolean }) {
   )
 }
 
-function LoadCard({ l, truck, view, onReject, onDelegate }: { l: Load; truck?: Truck; view: string; onReject: () => void; onDelegate: () => void }) {
+function LoadCard({ l, truck, view, onReject, onDelegate, general = false }: { l: Load; truck?: Truck; view: string; general?: boolean; onReject: () => void; onDelegate: () => void }) {
   const r = l.raw, m = l.metrics, f = r.firm
   const blocks = l.reasons.filter((x) => x.kind === "block")
   const shown = view === "filtered" && blocks.length ? blocks : l.reasons.filter((x) => x.kind !== "info").sort((a, b) => Math.abs(b.d) - Math.abs(a.d)).slice(0, 5)
@@ -106,7 +118,7 @@ function LoadCard({ l, truck, view, onReject, onDelegate }: { l: Load; truck?: T
 
         <div className="flex shrink-0 items-center gap-5 lg:w-[430px] lg:justify-end">
           <div className="text-right">
-            <div className="num text-lg font-semibold">{m.gross ? rub(m.gross) : <span className="text-muted-foreground">запрос</span>}</div>
+            <div className="num text-lg font-semibold">{m.gross ? rub(m.gross) : <span className="text-muted-foreground">{r.publicOnly ? "Ставка скрыта" : "запрос"}</span>}</div>
             <div className="text-xs text-muted-foreground">{m.per_km ? `${m.per_km} ₽/км чистыми · ` : ""}{m.money}</div>
           </div>
           <div className="w-40 text-sm">
@@ -119,9 +131,9 @@ function LoadCard({ l, truck, view, onReject, onDelegate }: { l: Load; truck?: T
             </div>
           </div>
           <div className="flex flex-col gap-1.5">
-            {view !== "rejected" && <Button size="sm" onClick={onDelegate} disabled={!f?.contacts?.length} title={f?.contacts?.length ? undefined : "Заказчик скрыт — написать некому, откройте груз на АТИ"}><Bot />Поручить агенту</Button>}
+            {!general && view !== "rejected" && <Button size="sm" onClick={onDelegate} disabled={!f?.contacts?.length} title={f?.contacts?.length ? undefined : "Заказчик скрыт — написать некому, откройте груз на АТИ"}><Bot />Поручить агенту</Button>}
             <div className="flex gap-1.5">
-              {view !== "rejected" && <Button size="sm" variant="outline" onClick={onReject}><ThumbsDown />Не то</Button>}
+              {!general && view !== "rejected" && <Button size="sm" variant="outline" onClick={onReject}><ThumbsDown />Не то</Button>}
               <Button size="sm" variant="ghost" asChild><a href={atiLink(r.id)} target="_blank" rel="noreferrer"><ExternalLink />АТИ</a></Button>
             </div>
           </div>

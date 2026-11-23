@@ -11,6 +11,7 @@ screens/
 server/recordings/
 server/eval-*.md
 backup.env
+backups/
 LOCAL_LOGIN.txt
 .pytest_cache/
 *.wav

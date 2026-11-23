@@ -123,7 +123,7 @@ if os.environ.get("DEMO_SEED") == "1" and not q("select id from trucks limit 1")
 
 ME = {}
 # Состояние внешних систем для интерфейса (ATI, модель, телефония): ok=None — ещё не проверяли
-HEALTH = {k: {"ok": None, "err": "", "ts": 0.0} for k in ("ati", "llm", "phone")}
+HEALTH = {k: {"ok": None, "err": "", "ts": 0.0} for k in ("ati", "ati_search", "llm", "phone")}
 
 
 def mark(part, ok, err=""):
@@ -131,7 +131,7 @@ def mark(part, ok, err=""):
     old = HEALTH[part]
     err = str(err)[:300]
     if not ok and (old["ok"] is not False or old["err"] != err):
-        log(f"{ {'ati': 'АТИ', 'llm': 'Модель', 'phone': 'Телефония'}[part] }: {err}", "error")
+        log(f"{ {'ati': 'АТИ', 'ati_search': 'Поиск АТИ', 'llm': 'Модель', 'phone': 'Телефония'}[part] }: {err}", "error")
     HEALTH[part] = {"ok": ok, "err": "" if ok else err, "ts": time.time()}
 
 
@@ -141,7 +141,9 @@ def ati_err(e):
         return "ATI_TOKEN не задан в .env — поиск и переписка не работают"
     if isinstance(e, httpx.HTTPStatusError):
         code = e.response.status_code
-        if code in (401, 403):
+        if code == 403:
+            return "АТИ запретила доступ к этому методу (403) — проверьте разрешения интеграции"
+        if code == 401:
             return f"АТИ отклонила токен ({code}) — проверьте ATI_TOKEN и тариф"
         return f"АТИ ответила {code}"
     if isinstance(e, httpx.TransportError):
@@ -185,6 +187,7 @@ async def scan_truck(t):
                         json.dumps(reasons, ensure_ascii=False), json.dumps(m), time.time(), time.time()))
         await asyncio.sleep(1.5)  # темп как у человека
     DB.execute("insert into scans values(?,?,?,?)", (time.time(), t["id"], seen, total))
+    mark("ati_search", True)
     mark("ati", True)
     log(f"{t['name']}: просмотрено {seen} свежих грузов из {total} в радиусе {t['radius']} км от {t['city_name']}")
 
@@ -232,7 +235,7 @@ async def monitor():
                 try:
                     await scan_truck(t)
                 except Exception as e:
-                    mark("ati", False, f"поиск грузов: {ati_err(e)}")
+                    mark("ati_search", False, f"поиск грузов: {ati_err(e)}")
             await auto_start()
         except Exception as e:  # ошибка одного прохода не должна останавливать поиск навсегда
             log(f"Ошибка мониторинга: {e}", "error")
@@ -791,6 +794,17 @@ async def call_loop():
 
 async def call_tick():
     """Один проход планировщика: закрыть зависшие, позвонить тем, кто молчит. -> [(dialog_id, call|None, причина)]."""
+    if isinstance(PHONE, telephony.MegafonProvider) and PHONE.api == "cp" and PHONE.ready:
+        pending = q("select * from calls where provider_id is not null and created>? "
+                    "and (status in ('queued','ringing','talking') or (status='done' and recording_url is null)) "
+                    "order by created desc limit 100", time.time() - 86400)
+        try:
+            for cid, result in await PHONE.completed_calls(pending):
+                await apply_call_result(cid, result)
+            if pending:
+                mark("phone", True)
+        except Exception as e:
+            mark("phone", False, f"синхронизация итогов звонков: {e}")
     await reap_stale_calls()
     st, done = settings(), []
     if st["call_enabled"] and not PHONE.ready:
@@ -956,7 +970,7 @@ def backup_state(now=None):
         return f"бэкап не удался: {err}"
     if not ok:
         return "бэкапов ещё не было — проверьте сервис backup"
-    if now - ok > 26 * 3600:
+    if now - ok > float(os.environ.get("BACKUP_MAX_AGE_HOURS", "26")) * 3600:
         return f"последний бэкап {int((now - ok) / 3600)} ч назад"
     return None
 
@@ -971,7 +985,12 @@ def health(now=None):
     a = HEALTH["ati"]
     if a["ok"] is False:
         add("ati", a["err"])
+    search = HEALTH["ati_search"]
+    if search["ok"] is False:
+        add("ati", search["err"])
     trucks = q("select count(*) n from trucks where active=1")[0]["n"]
+    if not trucks:
+        add("ati", "Добавьте машину для автоматического подбора. Общий поиск доступен в разделе «Грузы».", "warn")
     last = q("select max(ts) t from scans")[0]["t"] or 0
     if trucks and last and now - last > 3 * max(60, int(st["scan_minutes"]) * 60) + 120 and a["ok"] is not False:
         add("ati", f"поиск грузов не проходил {int((now - last) / 60)} мин")
@@ -985,7 +1004,7 @@ def health(now=None):
         add("phone", f"звонки включены, но {PHONE.why}")
     elif HEALTH["phone"]["ok"] is False:
         add("phone", HEALTH["phone"]["err"])
-    if PHONE.mode == "megafon" and not kv_get("megafon_webhook_seen"):
+    if PHONE.mode == "megafon" and getattr(PHONE, "api", None) != "cp" and not kv_get("megafon_webhook_seen"):
         add("phone", "ВАТС ещё не прислала ни одного уведомления о звонке — проверьте, что адрес из «Настройки» → «Телефония» "
                      "вставлен в кабинет ВАТС", "warn")
     if not ati.CLIENT_ID_SET:
@@ -994,7 +1013,9 @@ def health(now=None):
         add("backup", b)
     if st["auto_start"] and not st["send_enabled"]:
         add("agent", "агент сам берёт грузы, но отправка выключена — только черновики", "info")
-    return {"problems": out, "ati_ok": a["ok"], "ati_last_scan": last, "telephony": PHONE.mode}
+    return {"problems": out, "ati_ok": False if search["ok"] is False else a["ok"],
+            "ati_search_ok": search["ok"], "search_trucks": trucks,
+            "ati_last_scan": last, "telephony": PHONE.mode}
 
 
 @app.get("/api/loads")
@@ -1351,7 +1372,7 @@ async def telephony_webhook(secret: str, request: Request):
 class PhoneSettings(BaseModel):
     mode: str | None = None  # off | megafon | mock
     url: str | None = Field(None, max_length=500)
-    key: str | None = Field(None, max_length=500)  # пусто — оставить сохранённый
+    key: str | None = Field(None, max_length=8192)  # JWT нового кабинета МегаФона длиннее 500 символов
     user: str | None = Field(None, max_length=200)
     number: str | None = Field(None, max_length=30)  # виртуальный номер для исходящих; пусто — первый из ВАТС
     sip_server: str | None = Field(None, max_length=200)  # линия робота (SIP): сервер, логин, пароль из кабинета ВАТС
@@ -1561,6 +1582,61 @@ async def city(name):
     return c
 
 
+class SearchProfile(BaseModel):
+    city_name: str = Field("Санкт-Петербург", min_length=1, max_length=150)
+    to_city_name: str = Field("", max_length=150)
+    radius: int = Field(150, ge=10, le=2000)
+    body_mask: int = Field(1, ge=0, le=65535)
+    capacity: float = Field(20, gt=0, le=60)
+    height: float = Field(2.7, gt=0, le=5)
+    default_mode: str = Field("general", pattern="^(general|trucks)$")
+
+
+class SearchQuery(SearchProfile):
+    page: int = Field(1, ge=1, le=100)
+
+
+@app.get("/api/search/profile")
+async def search_profile():
+    saved = kv_get("search_profile")
+    return SearchProfile.model_validate_json(saved).model_dump() if saved else SearchProfile().model_dump()
+
+
+@app.put("/api/search/profile", dependencies=[Depends(auth.require_owner)])
+async def save_search_profile(b: SearchProfile):
+    kv_set("search_profile", b.model_dump_json())
+    auth.record(DB, "search_profile", None, f"{b.city_name} → {b.to_city_name or 'везде'}")
+    return b.model_dump()
+
+
+@app.post("/api/search")
+async def general_search(b: SearchQuery):
+    origin = await city(b.city_name)
+    target = await city(b.to_city_name) if b.to_city_name.strip() else None
+    profile = {**b.model_dump(), "city_id": origin["CityId"], "lat": origin["Latitude"],
+               "lon": origin["Longitude"], "free_from": date.today().isoformat(),
+               "to_city_id": target["CityId"] if target else None}
+    try:
+        raw_loads, total = await ati.search(profile, b.page)
+    except httpx.HTTPError as e:
+        mark("ati_search", False, ati_err(e))
+        raise HTTPException(502, ati_err(e)) from e
+    result = []
+    rules, st = q("select * from rules where active=1"), settings()
+    for raw in raw_loads:
+        try:
+            value, verdict, reasons, metrics = score(raw, profile, rules, st)
+        except (KeyError, TypeError, ValueError) as e:
+            log(f"Груз {raw.get('id')} пропущен в общем поиске: {type(e).__name__}", "error")
+            continue
+        result.append({"id": raw["id"], "truck_id": 0, "raw": raw, "score": value,
+                       "verdict": verdict, "reasons": reasons, "metrics": metrics, "status": "new"})
+    result.sort(key=lambda load: load["score"], reverse=True)
+    mark("ati_search", True)
+    return {"loads": result, "total": total, "page": b.page,
+            "public_only": any(load["raw"].get("publicOnly") for load in result)}
+
+
 @app.post("/api/trucks")
 async def add_truck(b: Truck):
     c = await city(b.city_name)
@@ -1642,7 +1718,7 @@ async def scan_now(tid: int):
     try:
         await scan_truck(t[0])
     except httpx.HTTPError as e:
-        mark("ati", False, f"поиск грузов: {ati_err(e)}")
+        mark("ati_search", False, f"поиск грузов: {ati_err(e)}")
         raise HTTPException(502, ati_err(e)) from e
     return {"ok": True}
 

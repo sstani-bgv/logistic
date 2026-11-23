@@ -82,7 +82,7 @@ function Shell({ me, onLogout }: { me: User; onLogout: () => void }) {
           <div className={cn("mt-auto rounded-lg border p-3 text-xs", atiBad ? "border-red-300 bg-red-50 dark:border-red-900 dark:bg-red-950/40" : "bg-muted/40")} role="status">
             <div className="mb-1 flex items-center gap-1.5 font-medium">
               <span className={cn("size-2 rounded-full", offline ? "bg-amber-500" : atiBad ? "bg-red-500" : s?.health?.ati_ok ? "animate-pulse bg-emerald-500" : "bg-muted-foreground")} />
-              {offline ? "Нет связи с сервером" : atiBad ? "АТИ: ошибка" : s?.health?.ati_ok ? "Мониторинг АТИ работает" : "Подключаемся к АТИ…"}
+              {offline ? "Нет связи с сервером" : atiBad ? "АТИ: ошибка" : s?.health?.search_trucks === 0 ? "Общий поиск АТИ" : s?.health?.ati_last_scan ? "Мониторинг АТИ работает" : "Ожидаем поиск грузов"}
             </div>
             <div className="text-muted-foreground">
               {atiBad ? errors.find((p) => p.part === "ati")?.text : s?.me?.name ? `Аккаунт: ${s.me.name}` : "Проверяем токен и тариф"}

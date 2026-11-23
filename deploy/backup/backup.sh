@@ -16,6 +16,12 @@ gzip -f "$snap"
 echo "$(date '+%F %T') база: $snap.gz ($(du -h "$snap.gz" | cut -f1))"
 find "$OUT/db" -name 'data-*.db.gz' -mtime +"$KEEP_DAYS" -delete
 
+if [ -d "$DATA/recordings" ]; then
+  mkdir -p "$OUT/recordings"
+  tar -czf "$OUT/recordings/recordings-$ts.tar.gz" -C "$DATA" recordings
+  find "$OUT/recordings" -name 'recordings-*.tar.gz' -mtime +"$KEEP_DAYS" -delete
+fi
+
 if [ -n "${BACKUP_BUCKET:-}" ] && [ -n "${RCLONE_CONFIG_S3_TYPE:-}" ]; then
   rclone copy "$snap.gz" "s3:$BACKUP_BUCKET/db/" --s3-no-check-bucket
   rclone delete "s3:$BACKUP_BUCKET/db/" --min-age "${KEEP_DAYS}d" --s3-no-check-bucket
@@ -26,8 +32,3 @@ if [ -n "${BACKUP_BUCKET:-}" ] && [ -n "${RCLONE_CONFIG_S3_TYPE:-}" ]; then
 fi
 date +%s > "$OUT/last_ok"
 rm -f "$OUT/last_error"
-if [ -z "${BACKUP_BUCKET:-}" ] || [ -z "${RCLONE_CONFIG_S3_TYPE:-}" ]; then
-  msg="внешнее хранилище не настроено (BACKUP_BUCKET, RCLONE_CONFIG_S3_*) — бэкап только на этом сервере"
-  echo "ВНИМАНИЕ: $msg" >&2
-  echo "$msg" > "$OUT/last_error"
-fi

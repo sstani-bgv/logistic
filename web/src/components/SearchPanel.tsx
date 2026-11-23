@@ -21,6 +21,7 @@ export default function SearchPanel({ settings = false, onResults, onDefaultMode
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState<number | null>(null)
   const [error, setError] = useState("")
+  const [expanded, setExpanded] = useState(settings)
 
   async function search(value: Profile, nextPage = 1) {
     setBusy(true); setError("")
@@ -52,8 +53,9 @@ export default function SearchPanel({ settings = false, onResults, onDefaultMode
   }
   return <section className="rounded-xl border bg-card p-4">
     {settings && <h2 className="mb-3 font-semibold">Общий поиск грузов</h2>}
+    {!settings && <Button type="button" variant="outline" className="mb-3" aria-expanded={expanded} aria-controls="advanced-search-filters" onClick={() => setExpanded(!expanded)}>Расширенный поиск</Button>}
     <form onSubmit={(e) => { e.preventDefault(); void search(profile) }} className="flex flex-col gap-4">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      <div id="advanced-search-filters" hidden={!expanded} className={expanded ? "grid gap-3 sm:grid-cols-2 xl:grid-cols-3" : "hidden"}>
         <div className="grid gap-1.5"><Label htmlFor="search-from">Откуда</Label><Input id="search-from" required value={profile.city_name} onChange={(e) => set("city_name", e.target.value)} /></div>
         <div className="grid gap-1.5"><Label htmlFor="search-to">Куда</Label><Input id="search-to" placeholder="Любое направление" value={profile.to_city_name} onChange={(e) => set("to_city_name", e.target.value)} /></div>
         <div className="grid gap-1.5"><Label htmlFor="search-radius">Радиус, км</Label><Input id="search-radius" type="number" min={10} max={2000} required value={profile.radius} onChange={(e) => set("radius", Number(e.target.value))} /></div>

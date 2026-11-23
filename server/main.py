@@ -525,20 +525,41 @@ def pending_line_call():
     return r[0] if r else None
 
 
+# Пробный звонок из «Настройки → Телефония»: робот звонит на любой номер по примерному грузу, без диалога.
+TEST_CALL = 0  # dialog_id пробного звонка
+TEST_GOAL = "Узнать: актуален ли груз, ставку и форму оплаты, точный адрес и время погрузки."
+TEST_ROUTE = ("Санкт-Петербург", "Москва")
+
+
+def test_call_script():
+    """-> (инструкции, приветствие) пробного звонка: примерный груз, первая машина из списка (или примерная)."""
+    day = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%dT09:00")
+    load = {"loadNumber": "пробный", "note": "", "firm": {"name": "пробный звонок"},
+            "loading": {"location": {"city": TEST_ROUTE[0], "street": ""}, "firstDate": day},
+            "unloading": {"location": {"city": TEST_ROUTE[1], "street": ""}},
+            "load": {"cargoType": "ТНП", "weight": 10}}
+    t = q("select * from trucks order by id limit 1")
+    truck = t[0] if t else {"name": "тягач", "body_name": "тент", "capacity": 20, "height": 2.7,
+                            "city_name": TEST_ROUTE[0], "free_from": day[:10]}
+    name = ME.get("name", "логист")
+    return (agent.call_instructions(load, {"dist": 710}, truck, TEST_GOAL, [], "", name), agent.greeting(load, name))
+
+
 async def line_talk(line_call):
     """Заказчик на связи: агент говорит голосом Yandex, итог — в звонок и переписку, как от любой телефонии."""
     c = pending_line_call()
     if not c:
         return
-    d = q("select * from dialogs where id=?", c["dialog_id"])
-    if not d:
+    d = None if c["dialog_id"] == TEST_CALL else q("select * from dialogs where id=?", c["dialog_id"])
+    if d is not None and not d:
         return
     DB.execute("update calls set status='talking' where id=?", (c["id"],))
     vc = voice.cfg()
     reason, turns = "error", []
     try:
-        reason, turns, _ = await voice.talk(line_call.recv, line_call.send, instructions_for_call(d[0]),
-                                            {**vc, "rate": sip.VOICE_RATE}, greeting=greeting_for_call(d[0]))
+        instr, greet = test_call_script() if d is None else (instructions_for_call(d[0]), greeting_for_call(d[0]))
+        reason, turns, _ = await voice.talk(line_call.recv, line_call.send, instr,
+                                            {**vc, "rate": sip.VOICE_RATE}, greeting=greet)
     except Exception as e:
         log(f"Звонок #{c['id']}: голос агента не подключился — {voice.explain(e)}", "error")
     secs = round(line_call.seconds)
@@ -1380,6 +1401,48 @@ async def put_phone(b: PhoneSettings, request: Request):
     reload_phone()
     auth.record(DB, "phone_settings", None, f"режим {phone_cfg()['mode']}, бот {phone_cfg()['user'] or '—'}")
     return phone_view(request)
+
+
+class TestCall(BaseModel):
+    phone: str
+
+
+@app.post("/api/phone/test-call", dependencies=[Depends(auth.require_owner)])
+async def test_call(b: TestCall):
+    """Робот звонит на указанный номер и говорит по примерному грузу — послушать, как он звучит."""
+    phone = calls.norm_phone(b.phone)
+    if not phone:
+        raise HTTPException(400, "Номер не похож на российский телефон — например +7 921 123-45-67")
+    if not PHONE.ready:
+        raise HTTPException(400, f"Звонки сейчас не работают: {PHONE.why}")
+    if q("select 1 from do_not_call where phone=?", phone):
+        raise HTTPException(400, "Этот номер в стоп-листе — на него не звоним")
+    if len(q("select 1 from calls where status in (%s)" % ",".join("?" * len(calls.ACTIVE)), *calls.ACTIVE)) >= CALL_LINES:
+        raise HTTPException(409, "Линия робота сейчас занята — попробуйте через пару минут")
+    by = auth.record(DB, "test_call", None, phone)
+    cid = DB.execute("insert into calls(dialog_id,phone,status,created,by_login) values(?,?,?,?,?)",
+                     (TEST_CALL, phone, "queued", time.time(), by)).lastrowid
+    call = q("select * from calls where id=?", cid)[0]
+    instr, greet = test_call_script()
+    ctx = {"goal": TEST_GOAL, "route": " — ".join(TEST_ROUTE), "load": {}, "facts": {}, "chat": [],
+           "instructions": instr, "greeting": greet}
+    try:
+        pid = await PHONE.start(call, ctx) or f"unknown-{cid}"
+    except Exception as e:
+        DB.execute("update calls set status='failed', error=? where id=?", (str(e)[:500], cid))
+        raise HTTPException(502, f"МегаФон не принял звонок: {e}") from e
+    DB.execute("update calls set provider_id=?, status=case when status='queued' then 'ringing' else status end,"
+               " started=? where id=?", (pid, time.time(), cid))
+    log(f"{by}: пробный звонок на {phone}", "agent")
+    return q("select * from calls where id=?", cid)[0]
+
+
+@app.get("/api/phone/test-call/{cid}", dependencies=[Depends(auth.require_owner)])
+async def test_call_state(cid: int):
+    c = q("select * from calls where id=? and dialog_id=?", cid, TEST_CALL)
+    if not c:
+        raise HTTPException(404)
+    return c[0]
 
 
 @app.post("/api/phone/check", dependencies=[Depends(auth.require_owner)])

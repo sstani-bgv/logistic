@@ -149,6 +149,48 @@ function CopyRow({ id, label, value, multiline }: { id: string; label: string; v
 
 /** Подключение ВАТС МегаФон прямо из программы: ключи вставляет владелец, по переписке они не ходят.
  *  Названия полей — как в кабинете ВАТС: «Настройки» → «Интеграция с CRM» → «Ваша CRM / REST API». */
+type TrialT = { id: number; phone: string; status: string; duration: number | null; transcript: string | null; error: string | null }
+const TRIAL_STATUS: Record<string, string> = {
+  queued: "набираем номер…", ringing: "звоним, ждём ответа…", talking: "идёт разговор…", done: "разговор завершён",
+  no_answer: "не ответили", busy: "занято", failed: "звонок не состоялся",
+}
+
+function TrialCall() {
+  const [phone, setPhone] = useState("")
+  const [call, setCall] = useState<TrialT | null>(null)
+  const [busy, setBusy] = useState(false)
+  const live = !!call && ["queued", "ringing", "talking"].includes(call.status)
+  useEffect(() => {
+    if (!call || !live) return
+    const t = setTimeout(() => api<TrialT>(`/phone/test-call/${call.id}`).then(setCall).catch(() => {}), 2000)
+    return () => clearTimeout(t)
+  }, [call, live])
+  const start = async () => {
+    setBusy(true)
+    try { setCall(await api<TrialT>("/phone/test-call", { body: { phone } })) } catch (e) { toast.error(errText(e)) } finally { setBusy(false) }
+  }
+  return (
+    <div className="mt-5 flex flex-col gap-3 border-t pt-5">
+      <div className="text-sm font-medium">Пробный звонок</div>
+      <p className="text-sm text-muted-foreground">Робот позвонит на этот номер и поговорит как с заказчиком — по примерному грузу Санкт-Петербург — Москва. Отвечайте как заказчик: про ставку, оплату, адрес и время погрузки.</p>
+      <div className="flex flex-wrap items-end gap-2">
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="ph-trial">Ваш номер телефона</Label>
+          <Input id="ph-trial" className="w-56" inputMode="tel" value={phone} placeholder="+7 921 123-45-67" onChange={(e) => setPhone(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && phone.trim() && !busy && !live) start() }} />
+        </div>
+        <Button type="button" onClick={start} disabled={busy || live || !phone.trim()}>{busy || live ? <Loader2 className="animate-spin" /> : <Phone />}Позвонить мне</Button>
+      </div>
+      {call && <div role="status" className="flex flex-col gap-2 text-sm">
+        <span className={call.status === "done" ? "text-emerald-700 dark:text-emerald-400" : live ? "text-muted-foreground" : "text-destructive"}>
+          {call.phone}: {TRIAL_STATUS[call.status] ?? call.status}{call.duration ? `, ${Math.floor(call.duration / 60)}:${String(call.duration % 60).padStart(2, "0")}` : ""}{call.error ? ` — ${call.error}` : ""}
+        </span>
+        {call.transcript && <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-muted p-3 font-sans text-sm">{call.transcript}</pre>}
+      </div>}
+    </div>
+  )
+}
+
 function PhoneSettings() {
   const [p, setP] = useState<PhoneT | null>(null)
   const [f, setF] = useState({ mode: "off" as PhoneT["mode"], url: "", user: "", key: "", number: "", sip_server: "", sip_login: "", sip_password: "" })
@@ -259,6 +301,7 @@ function PhoneSettings() {
       </div>
       {p.mode === "megafon" && !p.ready && <p className="mt-3 text-sm text-destructive">{p.why}</p>}
       {check && <p role="status" className={`mt-3 text-sm ${check.ok ? "text-emerald-700 dark:text-emerald-400" : "text-destructive"}`}>{check.text}</p>}
+      {p.mode !== "off" && !dirty && <TrialCall />}
     </section>
   )
 }

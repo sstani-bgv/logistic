@@ -7,6 +7,7 @@ import pytest
 
 import calls
 import main
+import telephony
 from calls import MSK
 
 ST = {"call_enabled": True, "call_after_min": 15, "call_hours": "00:00-24:00", "call_daily": 20}
@@ -404,3 +405,38 @@ def test_llm_error_goes_to_summary(monkeypatch):
     asyncio.run(main._agent_step(main.q("select * from dialogs where id=?", did)[0]))
     d = main.q("select status, summary from dialogs where id=?", did)[0]
     assert d["status"] == "waiting" and "невалидный JSON" in d["summary"]
+
+
+# --- пробный звонок из настроек ---
+
+def test_test_call_script_has_route():
+    instr, greet = main.test_call_script()
+    assert "Санкт-Петербург — Москва" in greet and "ИИ-помощник" in instr
+
+
+def test_test_call_mock(monkeypatch, clean):
+    """Робот звонит на любой номер по примерному грузу; итог — в звонке, без диалога и без агента."""
+    monkeypatch.setenv("MOCK_CALL_SECONDS", "0")
+    monkeypatch.setattr(main, "PHONE", telephony.MockProvider(main.apply_call_result))
+
+    async def go():
+        c = await main.test_call(main.TestCall(phone="8 (921) 555-12-34"))
+        assert c["phone"] == "+79215551234" and c["dialog_id"] == main.TEST_CALL and c["status"] == "ringing"
+        await asyncio.sleep(0.05)
+        return await main.test_call_state(c["id"])
+    c = asyncio.run(go())
+    assert c["status"] == "done" and "Шестьдесят" in c["transcript"]
+    assert not main.q("select * from messages") and clean == []  # в переписку не пишем, агента не зовём
+
+
+def test_test_call_refuses(monkeypatch, make_client):
+    owner = make_client("owner")
+    monkeypatch.setattr(main, "PHONE", telephony.OffProvider(None))
+    r = owner.post("/api/phone/test-call", json={"phone": "+79215551234"})
+    assert r.status_code == 400 and "не работают" in r.json()["detail"]
+    monkeypatch.setattr(main, "PHONE", telephony.MockProvider(lambda *a: None))
+    assert owner.post("/api/phone/test-call", json={"phone": "123"}).status_code == 400
+    main.DB.execute("insert into do_not_call values(?,?,?,?)", ("+79215551234", "x", time.time(), "t"))
+    assert "стоп-листе" in owner.post("/api/phone/test-call", json={"phone": "89215551234"}).json()["detail"]
+    assert make_client("logist").post("/api/phone/test-call", json={"phone": "+79215550000"}).status_code == 403
+    assert main.q("select count(*) n from calls")[0]["n"] == 0

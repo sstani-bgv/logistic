@@ -116,9 +116,11 @@ def env(monkeypatch):
         main.DB.execute(f"delete from {t}")
 
 
-def test_line_call_end_to_end(env, monkeypatch):
-    """ВАТС зовёт бота → линия отвечает → агент говорит голосом в RTP, слышит заказчика → итог и расшифровка в звонке."""
-    did = dialog(truck(), load_raw(), status="waiting")
+@pytest.mark.parametrize("trial", [False, True])
+def test_line_call_end_to_end(env, monkeypatch, trial):
+    """ВАТС зовёт бота → линия отвечает → агент говорит голосом в RTP, слышит заказчика → итог и расшифровка в звонке.
+    trial — пробный звонок из настроек: без диалога, по примерному грузу."""
+    did = main.TEST_CALL if trial else dialog(truck(), load_raw(), status="waiting")
     main.DB.execute("insert into calls(dialog_id,phone,status,created,started,provider_id) values(?,?,?,?,?,?)",
                     (did, "+79215551234", "ringing", time.time(), time.time(), "555"))
     agent_pcm = base64.b64encode(b"\x10\x00" * 3200).decode()  # 100 мс звука агента (16 кГц)
@@ -174,6 +176,9 @@ def test_line_call_end_to_end(env, monkeypatch):
     assert fake.got[0]["session"]["audio"]["input"]["format"]["rate"] == sip.VOICE_RATE
     c = main.q("select * from calls where provider_id='555'")[0]
     assert c["status"] == "done" and "Заказчик: Да, груз актуален" in c["transcript"]
+    if trial:
+        assert "Санкт-Петербург — Москва" in json.dumps(fake.got, ensure_ascii=False)
+        assert not main.q("select * from messages")
 
 
 def test_foreign_invite_rejected(env):

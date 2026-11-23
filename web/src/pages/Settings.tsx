@@ -199,7 +199,11 @@ function PhoneSettings() {
   const [busy, setBusy] = useState<"" | "save" | "check">("")
   const [check, setCheck] = useState<{ ok: boolean; text: string } | null>(null)
   const apply = (v: PhoneT) => { setP(v); setF({ mode: v.mode, url: v.url, user: v.user, key: "", number: v.number, sip_server: v.sip_server, sip_login: v.sip_login, sip_password: "" }) }
-  useEffect(() => { api<PhoneT>("/phone").then(apply).catch((e) => toast.error(errText(e))) }, [])
+  useEffect(() => {
+    api<PhoneT>("/phone").then(apply).catch((e) => toast.error(errText(e)))
+    const timer = setInterval(() => { api<PhoneT>("/phone").then(setP).catch(() => {}) }, 5000)
+    return () => clearInterval(timer)
+  }, [])
   const save = async () => {
     setBusy("save"); setCheck(null)
     try {

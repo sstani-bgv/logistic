@@ -949,7 +949,6 @@ async def stats():
             "dialogs": q("select count(*) n from dialogs where status in ('writing','waiting')")[0]["n"],
             "ready": q("select count(*) n from dialogs where status='ready'")[0]["n"],
             "rules": q("select count(*) n from rules where active=1")[0]["n"],
-            "hours_saved": round(scans["s"] * 25 / 3600, 1),  # ~25 сек логиста на просмотр одного груза
             "me": ME, "log": LOG[:40], "health": health()}
 
 

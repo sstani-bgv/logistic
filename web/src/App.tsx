@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { BookOpenCheck, MessagesSquare, PackageSearch, Truck as TruckIcon, Radar, Clock, Filter, Sparkles, Settings as SettingsIcon, Users as UsersIcon, LogOut } from "lucide-react"
+import { BookOpenCheck, MessagesSquare, PackageSearch, Truck as TruckIcon, Radar, Filter, Sparkles, Settings as SettingsIcon, Users as UsersIcon, LogOut } from "lucide-react"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { Button } from "@/components/ui/button"
@@ -118,11 +118,10 @@ function Shell({ me, onLogout }: { me: User; onLogout: () => void }) {
             </nav>
           </div>
           <header className="hidden border-b bg-card md:block">
-            <div className="grid grid-cols-2 gap-px bg-border lg:grid-cols-4">
+            <div className="grid grid-cols-3 gap-px bg-border">
               <Stat icon={Radar} label="Просмотрено ботом сегодня" value={s?.views} hint={`${s?.scans ?? 0} проходов по бирже`} />
               <Stat icon={Filter} label="Отсеяно автоматически" value={s?.filtered} hint="не подходят по правилам" />
               <Stat icon={Sparkles} label="Подходящих сейчас" value={s?.relevant} hint={`${s?.ready ?? 0} готовы к звонку`} accent />
-              <Stat icon={Clock} label="Рутины снято с логиста" value={s ? `${s.hours_saved} ч` : undefined} hint="≈25 сек на просмотр груза" />
             </div>
           </header>
           <div className="flex gap-6 px-4 py-6 md:px-8">

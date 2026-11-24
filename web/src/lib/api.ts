@@ -39,7 +39,7 @@ export type Rule = { id: number; match: string; value: string; block: number; de
 export type LogItem = { ts: number; text: string; kind: string }
 export type Stats = {
   seen: number; relevant: number; filtered: number; views: number; scans: number; dialogs: number; ready: number
-  rules: number; hours_saved: number; me: { name?: string; ati_id?: string }; log: LogItem[]
+  rules: number; me: { name?: string; ati_id?: string }; log: LogItem[]
   health?: Health
 }
 export type Problem = { part: "ati" | "llm" | "phone" | "backup" | "agent"; text: string; level: "error" | "warn" | "info" }

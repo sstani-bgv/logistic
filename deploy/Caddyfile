@@ -1,9 +1,10 @@
 {
-	# UDP 443 наружу не открыт: без этого Caddy объявляет HTTP/3, и браузеры ждут ответа впустую
+	# HTTP/3 is not exposed by this deployment, so do not advertise it.
 	servers {
 		protocols h1 h2
 	}
 }
+
 {$SITE} {
 	log {
 		output stdout
@@ -25,12 +26,14 @@
 		X-Content-Type-Options nosniff
 		X-Frame-Options DENY
 		Referrer-Policy strict-origin-when-cross-origin
-		Content-Security-Policy "default-src 'self'; img-src 'self' data:; media-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' wss://{$SITE}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		Content-Security-Policy "default-src 'self'; img-src 'self' data:; media-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 		-Server
 		Alt-Svc clear
 	}
 }
-# Проверка связи по голому IP: без этого Caddy уводит на https, а сертификата на IP нет — выглядит как «сайт не работает»
+
+# Plain-IP diagnostic endpoint: it proves that the host is reachable without
+# exposing authentication or customer data over unencrypted HTTP.
 http:// {
 	log
 	header Content-Type "text/plain; charset=utf-8"

@@ -296,6 +296,7 @@ class Phone(asyncio.DatagramProtocol):
         self.server = (host, int(sport or 5060))
         self.public_ip, self.port = public_ip, port
         self.rtp_ports, self.expires, self.max_calls = rtp_ports, expires, max_calls
+        self.granted = expires
         self.accept = accept  # accept(INVITE) -> bool: берём трубку, только если звонок поставили мы
         self.transport = None
         self.calls = {}
@@ -381,6 +382,7 @@ class Phone(asyncio.DatagramProtocol):
             except asyncio.TimeoutError:
                 raise RuntimeError(f"сервер {self.server[0]}:{self.server[1]} не отвечает") from None
             if r.status == 200:
+                self.granted = self.granted_sec(r)
                 return True
             if r.status in (401, 407):
                 hdr = "www-authenticate" if r.status == 401 else "proxy-authenticate"
@@ -389,6 +391,14 @@ class Phone(asyncio.DatagramProtocol):
                 continue
             raise RuntimeError(f"регистрация отклонена: {r.first}")
         raise RuntimeError("неверный логин или пароль линии")
+
+    def granted_sec(self, r):
+        """На сколько секунд сервер принял линию: expires в нашем Contact, потом заголовок Expires, потом что просили.
+        МегаФон даёт 120 вместо запрошенных 300 — обновляем по его сроку, иначе линия пропадает между обновлениями."""
+        mine = next((p for v in (v for k, v in r.headers if k == "contact") for p in v.split(",")
+                     if f"{self.public_ip}:{self.port}" in p), "")
+        m = re.search(r"[;,]\s*expires\s*=\s*\"?(\d+)", mine, re.I) or re.match(r"\s*(\d+)", r.get("expires") or "")
+        return min(self.expires, int(m.group(1))) if m else self.expires
 
     async def run(self):
         loop = asyncio.get_running_loop()
@@ -401,13 +411,13 @@ class Phone(asyncio.DatagramProtocol):
                 if not self.registered:
                     log(f"линия {self.user}@{self.domain} подключена")
                 self.registered, self.state = True, "подключена"
-                await asyncio.sleep(max(30, self.expires * 0.8))
+                await asyncio.sleep(max(20, self.granted * 0.6))  # запас на потерянный пакет и повтор
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 self.registered, self.state = False, f"не подключена: {e}"
                 log(self.state, "error")
-                await asyncio.sleep(30)
+                await asyncio.sleep(10)
 
     def start(self):
         self.task = asyncio.get_running_loop().create_task(self.run())

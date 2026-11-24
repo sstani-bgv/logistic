@@ -1,4 +1,20 @@
+{
+	# UDP 443 наружу не открыт: без этого Caddy объявляет HTTP/3, и браузеры ждут ответа впустую
+	servers {
+		protocols h1 h2
+	}
+}
 {$SITE} {
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>headers delete
+				request>uri delete
+			}
+		}
+	}
 	encode zstd gzip
 	request_body {
 		max_size 2MB
@@ -11,5 +27,6 @@
 		Referrer-Policy strict-origin-when-cross-origin
 		Content-Security-Policy "default-src 'self'; img-src 'self' data:; media-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' wss://{$SITE}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 		-Server
+		Alt-Svc clear
 	}
 }

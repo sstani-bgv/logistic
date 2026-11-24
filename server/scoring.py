@@ -82,7 +82,7 @@ def score(load, truck, rules, settings):
     per_km = net / (dist + dead) if net else None
     mt = MONEY.get(rate.get("moneyType"), "—")
     if per_km is None:
-        add("Ставка скрыта АТИ — откройте груз в своём аккаунте" if load.get("publicOnly") else "Ставка «запрос» — агент уточнит", -8)
+        add("Ставка скрыта АТИ — оценка неполная: только маршрут, вес, кузов и даты" if load.get("publicOnly") else "Ставка «запрос» — агент уточнит", -8)
     else:
         target = settings["min_rate_km"]
         if per_km >= target * 1.15:

@@ -200,6 +200,15 @@ def test_foreign_invite_rejected(env):
     assert 480 in asyncio.run(go())
 
 
+@pytest.mark.parametrize("hs, want", [
+    ([("contact", "<sip:705@10.0.0.1:5070>;expires=120"), ("expires", "300")], 120),  # так отвечает МегаФон
+    ([("contact", "<sip:705@9.9.9.9:5060>;expires=30, <sip:705@10.0.0.1:5070>;expires=120")], 120),  # чужой аппарат на той же линии
+    ([("expires", "60")], 60), ([], 300), ([("expires", "3600")], 300)])
+def test_registration_refreshes_before_server_drops_line(hs, want):
+    ph = sip.Phone("127.0.0.1", LOGIN, PASSWORD, None, public_ip="10.0.0.1", port=5070)
+    assert ph.granted_sec(sip.Msg("SIP/2.0 200 OK", hs)) == want
+
+
 def test_wrong_password(env):
     async def go():
         loop = asyncio.get_running_loop()

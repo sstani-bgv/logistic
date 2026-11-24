@@ -22,7 +22,9 @@ async def search(truck, page):
         body["filter"].pop("truck_type")
     if truck.get("capacity"):
         body["filter"]["weight"] = {"max": truck["capacity"]}
-    r = await client.post("https://loads.ati.su/webapi/public/v1.0/loads/search", json=body)
+    # Публичная выдача — без ставок, фирм и контактов. Полную включаем, когда АТИ откроет к ней доступ токену (сейчас 403).
+    path = "v1.0" if os.environ.get("ATI_SEARCH_FULL") == "1" else "public/v1.0"
+    r = await client.post(f"https://loads.ati.su/webapi/{path}/loads/search", json=body)
     r.raise_for_status()
     j = r.json()
     loads = j.get("loads", [])

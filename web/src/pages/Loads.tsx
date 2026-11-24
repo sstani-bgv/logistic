@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { toast } from "sonner"
-import { ArrowRight, Bot, ExternalLink, ThumbsDown, ShieldCheck, Loader2, MapPin } from "lucide-react"
+import { ArrowRight, Bot, ExternalLink, ThumbsDown, ShieldCheck, Loader2, MapPin, Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
+import { Input } from "@/components/ui/input"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { api, errText, usePoll, rub, ddmm, ago, atiLink, type Load, type Truck } from "@/lib/api"
 import { cn } from "@/lib/utils"
@@ -22,6 +23,7 @@ const VIEWS = [
 export default function LoadsPage() {
   const [mode, setMode] = useState<"general" | "trucks">("general")
   const [general, setGeneral] = useState<SearchResult | null>(null)
+  const [manual, setManual] = useState<Partial<ManualForm> | null>(null)
   const [view, setView] = useState("relevant")
   const [truck, setTruck] = useState("all")
   const { data: loads, reload } = usePoll<Load[]>(`/loads?view=${view}${truck !== "all" ? `&truck=${truck}` : ""}`, 6000)
@@ -51,13 +53,16 @@ export default function LoadsPage() {
         </div>}
       </div>
 
-      <Tabs value={mode} onValueChange={(value) => setMode(value as "general" | "trucks")}>
-        <TabsList><TabsTrigger value="general">Общий поиск</TabsTrigger><TabsTrigger value="trucks">Под мои машины</TabsTrigger></TabsList>
-      </Tabs>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Tabs value={mode} onValueChange={(value) => setMode(value as "general" | "trucks")}>
+          <TabsList><TabsTrigger value="general">Общий поиск</TabsTrigger><TabsTrigger value="trucks">Под мои машины</TabsTrigger></TabsList>
+        </Tabs>
+        <Button variant="outline" onClick={() => setManual({})}><Plus />Добавить груз вручную</Button>
+      </div>
       <div className={mode === "general" ? "" : "hidden"}><SearchPanel onResults={setGeneral} onDefaultMode={setMode} /></div>
       {mode === "general" && <>
         {general?.public_only && <p className="text-sm text-muted-foreground">АТИ показывает публичные объявления. Контакты и ставки доступны при открытии груза в аккаунте АТИ.</p>}
-        {!general ? <div role="status" className="text-sm text-muted-foreground">Задайте фильтры и нажмите «Найти грузы».</div> : general.loads.length === 0 ? <p className="text-sm text-muted-foreground">По этим фильтрам грузов нет. Попробуйте увеличить радиус или выбрать другой кузов.</p> : general.loads.map((load) => <LoadCard key={load.id} l={load} view="all" general onReject={() => {}} onDelegate={() => {}} />)}
+        {!general ? <div role="status" className="text-sm text-muted-foreground">Задайте фильтры и нажмите «Найти грузы».</div> : general.loads.length === 0 ? <p className="text-sm text-muted-foreground">По этим фильтрам грузов нет. Попробуйте увеличить радиус или выбрать другой кузов.</p> : general.loads.map((load) => <LoadCard key={load.id} l={load} view="all" general onReject={() => {}} onDelegate={() => {}} onComplete={() => setManual(fromLoad(load))} />)}
       </>}
 
       {mode === "trucks" && (!loads ? <Loader2 className="mx-auto size-6 animate-spin text-muted-foreground" /> :
@@ -69,7 +74,58 @@ export default function LoadsPage() {
 
       <RejectDialog load={rejecting} onClose={() => setRejecting(null)} onDone={reload} />
       <DelegateDialog load={delegating} onClose={() => setDelegating(null)} onDone={reload} />
+      {manual && <ManualLoadDialog init={manual} trucks={trucks ?? []} onClose={() => setManual(null)}
+        onDone={(l) => { setManual(null); setMode("trucks"); setTruck("all"); setView(l.verdict === "filtered" ? "filtered" : "relevant"); void reload() }} />}
     </div>
+  )
+}
+
+type ManualForm = { truck_id: number; from_city: string; to_city: string; load_date: string; weight: number; cargo: string; price: number; money: number; distance: number; firm: string; contact: string; phone: string; note: string }
+const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+const fromLoad = (l: Load): Partial<ManualForm> => ({
+  from_city: l.raw.loading.location.city, to_city: l.raw.unloading.location.city, load_date: l.raw.loading.firstDate?.slice(0, 10) || today(),
+  weight: l.raw.load.weight, cargo: l.raw.load.cargoType, distance: Math.round(l.raw.route?.distance || 0), note: l.raw.note ?? "",
+})
+
+function ManualLoadDialog({ init, trucks, onClose, onDone }: { init: Partial<ManualForm>; trucks: Truck[]; onClose: () => void; onDone: (l: Load) => void }) {
+  const [f, setF] = useState<ManualForm>({ truck_id: trucks[0]?.id ?? 0, from_city: "", to_city: "", load_date: today(), weight: 20, cargo: "", price: 0, money: 1, distance: 0, firm: "", contact: "", phone: "", note: "", ...init })
+  const [busy, setBusy] = useState(false)
+  const submit = async () => {
+    setBusy(true)
+    try {
+      const l = await api<Load>("/loads/manual", { body: f })
+      toast.success(`Груз оценён: ${l.score} из 100`, { description: l.verdict === "filtered" ? "Отсеян — причины в карточке" : undefined })
+      onDone(l)
+    } catch (e) { toast.error(errText(e)) } finally { setBusy(false) }
+  }
+  const text = (k: "from_city" | "to_city" | "cargo" | "firm" | "contact" | "phone", label: string, placeholder = "") => (
+    <div className="grid gap-1.5"><Label htmlFor={`m-${k}`}>{label}</Label><Input id={`m-${k}`} value={f[k]} placeholder={placeholder} onChange={(e) => setF({ ...f, [k]: e.target.value })} /></div>)
+  const num = (k: "weight" | "price" | "distance", label: string) => (
+    <div className="grid gap-1.5"><Label htmlFor={`m-${k}`}>{label}</Label><Input id={`m-${k}`} type="number" min={0} value={f[k] || ""} onChange={(e) => setF({ ...f, [k]: Number(e.target.value) })} /></div>)
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>Груз вручную</DialogTitle>
+          <DialogDescription>Впишите ставку и телефон, которые видите на АТИ: ассистент оценит груз под машину, а робот сможет позвонить заказчику.</DialogDescription>
+        </DialogHeader>
+        {trucks.length === 0 ? <p role="alert" className="text-sm text-destructive">Сначала добавьте машину в разделе «Машины»: груз оценивается под неё.</p> : <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-1.5 sm:col-span-2"><Label htmlFor="m-truck">Машина</Label>
+            <select id="m-truck" className="h-9 rounded-md border bg-background px-3 text-sm" value={f.truck_id} onChange={(e) => setF({ ...f, truck_id: Number(e.target.value) })}>{trucks.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select></div>
+          {text("from_city", "Откуда")}{text("to_city", "Куда")}
+          <div className="grid gap-1.5"><Label htmlFor="m-date">Погрузка</Label><Input id="m-date" type="date" value={f.load_date} onChange={(e) => setF({ ...f, load_date: e.target.value })} /></div>
+          {num("weight", "Вес, т")}{text("cargo", "Груз", "ТНП")}{num("distance", "Расстояние, км (пусто — посчитаем)")}
+          {num("price", "Ставка, ₽ (пусто — неизвестна)")}
+          <div className="grid gap-1.5"><Label htmlFor="m-money">Оплата</Label>
+            <select id="m-money" className="h-9 rounded-md border bg-background px-3 text-sm" value={f.money} onChange={(e) => setF({ ...f, money: Number(e.target.value) })}><option value={1}>с НДС</option><option value={2}>без НДС</option><option value={3}>наличными</option><option value={23}>на карту</option></select></div>
+          {text("firm", "Фирма")}{text("contact", "Контакт")}{text("phone", "Телефон", "+7 921 123-45-67")}
+        </div>}
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Отмена</Button>
+          <Button onClick={submit} disabled={busy || !f.truck_id || !f.from_city.trim() || !f.to_city.trim() || !f.load_date || !f.weight}>{busy ? <Loader2 className="animate-spin" /> : <Plus />}Оценить груз</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -86,7 +142,7 @@ function ScoreRing({ v, filtered }: { v: number; filtered: boolean }) {
   )
 }
 
-function LoadCard({ l, truck, view, onReject, onDelegate, general = false }: { l: Load; truck?: Truck; view: string; general?: boolean; onReject: () => void; onDelegate: () => void }) {
+function LoadCard({ l, truck, view, onReject, onDelegate, onComplete, general = false }: { l: Load; truck?: Truck; view: string; general?: boolean; onReject: () => void; onDelegate: () => void; onComplete?: () => void }) {
   const r = l.raw, m = l.metrics, f = r.firm
   const blocks = l.reasons.filter((x) => x.kind === "block")
   const shown = view === "filtered" && blocks.length ? blocks : l.reasons.filter((x) => x.kind !== "info").sort((a, b) => Math.abs(b.d) - Math.abs(a.d)).slice(0, 5)
@@ -134,7 +190,8 @@ function LoadCard({ l, truck, view, onReject, onDelegate, general = false }: { l
             {!general && view !== "rejected" && <Button size="sm" onClick={onDelegate} disabled={!f?.contacts?.length} title={f?.contacts?.length ? undefined : "Заказчик скрыт — написать некому, откройте груз на АТИ"}><Bot />Поручить агенту</Button>}
             <div className="flex gap-1.5">
               {!general && view !== "rejected" && <Button size="sm" variant="outline" onClick={onReject}><ThumbsDown />Не то</Button>}
-              <Button size="sm" variant="ghost" asChild><a href={atiLink(r.id)} target="_blank" rel="noreferrer"><ExternalLink />АТИ</a></Button>
+              {onComplete && <Button size="sm" variant="outline" onClick={onComplete} title="Вписать ставку и телефон, которые вы видите на АТИ, — ассистент оценит груз"><Plus />Дополнить</Button>}
+              {!r.manual && <Button size="sm" variant="ghost" asChild><a href={atiLink(r.id)} target="_blank" rel="noreferrer"><ExternalLink />АТИ</a></Button>}
             </div>
           </div>
         </div>
@@ -195,7 +252,7 @@ function DelegateDialog({ load, onClose, onDone }: { load: Load | null; onClose:
     try {
       const d = await api<{ chat_id: string | null; summary: string }>(`/loads/${load.id}/agent`, { body: { goal: text } })
       if (!d.chat_id)  // чат в АТИ не открылся — честно говорим, что будет дальше
-        toast.warning("Чат с заказчиком не открылся", { description: `${d.summary}. ${st?.call_enabled ? "Агент позвонит." : "Звонки выключены — позвоните сами или включите звонки."}` })
+        toast.warning(load.raw.manual ? "Переговоры по телефону" : "Чат с заказчиком не открылся", { description: `${d.summary}. ${st?.call_enabled ? "Агент позвонит." : "Звонки выключены — позвоните сами или включите звонки."}` })
       else
         toast.success(st?.send_enabled === false ? "Агент готовит черновик" : "Агент взял груз в работу", { description: "Переписка — во вкладке «Переговоры»" })
       setGoal(null); onClose(); onDone()
@@ -207,7 +264,7 @@ function DelegateDialog({ load, onClose, onDone }: { load: Load | null; onClose:
         <DialogHeader>
           <DialogTitle>Поручить переговоры агенту</DialogTitle>
           <DialogDescription>
-            Агент напишет {contact ? <b className="text-foreground">{contact.name}</b> : "заказчику"} в мессенджер АТИ от вашего имени и уточнит то, что нужно по сценарию. Если не ответят в чате — позвонит (когда звонки включены). Сам ничего не подтверждает: позовёт вас, когда всё будет известно.
+            {load?.raw.manual ? "Груз внесён вручную, чата АТИ нет. " : ""}Агент {load?.raw.manual ? "позвонит" : "напишет"} {contact ? <b className="text-foreground">{contact.name}</b> : "заказчику"} {load?.raw.manual ? "" : "в мессенджер АТИ от вашего имени "}и уточнит то, что нужно по сценарию. {load?.raw.manual ? "Звонок — когда звонки включены, или кнопкой в «Переговорах»." : "Если не ответят в чате — позвонит (когда звонки включены)."} Сам ничего не подтверждает: позовёт вас, когда всё будет известно.
           </DialogDescription>
         </DialogHeader>
         {st && st.send_enabled === false && <div role="status" className="rounded-md bg-amber-50 p-2.5 text-xs text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">Отправка сообщений выключена в настройках: агент подготовит черновик, заказчику ничего не уйдёт, пока вы не нажмёте «Отправить».</div>}

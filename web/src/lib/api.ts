@@ -8,6 +8,7 @@ export type Firm = {
 }
 export type Raw = {
   publicOnly?: boolean
+  manual?: boolean
   id: string; loadNumber?: string; note?: string; addDate: string; changeDate?: string; similarCount?: number
   route: { distance: number }
   load: { weight: number; volume: number; height: number; cargoType: string }

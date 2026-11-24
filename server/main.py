@@ -14,7 +14,7 @@ time.tzset()
 
 import httpx
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
@@ -79,7 +79,7 @@ def migrate():
 migrate()
 # На новой (и перенесённой) базе агент молчит: сначала знакомство с интерфейсом, потом владелец включает
 # переключателями в «Настройках» или командой `manage.py agent on`. Поиск и оценка грузов работают сразу.
-DEFAULTS = {"vat": 22, "min_rate_km": 55, "threshold": 55, "scan_minutes": 5, "pages": 4, "send_enabled": False,
+DEFAULTS = {"vat": 22, "min_rate_km": 55, "threshold": 55, "scan_minutes": 5, "pages": 4, "scan_auto": True, "send_enabled": False,
             # агент сам берёт лучшие грузы; лимиты — чтобы не спамить биржу
             "auto_start": False, "auto_score": 85, "auto_per_cycle": 1, "auto_daily": 3,  # старт у клиента — осторожно, потом поднять
             "default_goal": "Узнать то, чего нет в объявлении и что нужно для решения: актуален ли груз; если ставка «запрос» — "
@@ -231,7 +231,7 @@ async def monitor():
             for tid in fleet.release_due(DB):
                 log(f"Машина #{tid} освободилась по дате — снова ищем грузы")
             where, args = fleet.scan_filter()
-            for t in q(f"select * from trucks where {where}", *args):
+            for t in q(f"select * from trucks where {where}", *args) if settings()["scan_auto"] else []:
                 try:
                     await scan_truck(t)
                 except Exception as e:
@@ -994,7 +994,7 @@ def health(now=None):
     if not trucks and search_mode == "trucks":
         add("ati", "Добавьте машину для автоматического подбора. Общий поиск доступен в разделе «Грузы».", "warn")
     last = q("select max(ts) t from scans")[0]["t"] or 0
-    if trucks and last and now - last > 3 * max(60, int(st["scan_minutes"]) * 60) + 120 and a["ok"] is not False:
+    if st["scan_auto"] and trucks and last and now - last > 3 * max(60, int(st["scan_minutes"]) * 60) + 120 and a["ok"] is not False:
         add("ati", f"поиск грузов не проходил {int((now - last) / 60)} мин")
     if not os.environ.get("LLM_BASE_URL"):
         add("llm", "модель не настроена: LLM_BASE_URL, LLM_MODEL, LLM_API_KEY в .env")
@@ -1029,6 +1029,58 @@ async def loads(view: str = "relevant", truck: int | None = None, limit: int = Q
         where += f" and truck_id={int(truck)}"
     order = "score desc, updated desc" if view == "relevant" else "updated desc"
     return [load_row(r) for r in q(f"select * from loads where {where} order by {order} limit ?", *args, limit)]
+
+
+class ManualLoad(BaseModel):
+    """Груз, который логист сам увидел на бирже (или получил по телефону): ставка и контакт известны человеку."""
+    truck_id: int
+    from_city: str = Field(min_length=2, max_length=150)
+    to_city: str = Field(min_length=2, max_length=150)
+    load_date: date
+    weight: float = Field(gt=0, le=60)
+    cargo: str = Field("груз", max_length=120)
+    price: int = Field(0, ge=0, le=100_000_000)  # 0 — ставка неизвестна, агент уточнит
+    money: int = 1  # коды АТИ: 1 с НДС, 2 без НДС, 3 наличными, 23 на карту
+    distance: int = Field(0, ge=0, le=20000)  # 0 — посчитаем по координатам
+    firm: str = Field("", max_length=200)
+    contact: str = Field("", max_length=120)
+    phone: str = Field("", max_length=40)
+    note: str = Field("", max_length=1000)
+
+
+@app.post("/api/loads/manual")
+async def add_manual_load(b: ManualLoad):
+    t = q("select * from trucks where id=?", b.truck_id)
+    if not t:
+        raise HTTPException(400, "Выберите машину")
+    if b.money not in (1, 2, 3, 23):
+        raise HTTPException(400, "Форма оплаты: с НДС, без НДС, наличными или на карту")
+    phone = calls.norm_phone(b.phone) if b.phone.strip() else None
+    if b.phone.strip() and not phone:
+        raise HTTPException(400, "Телефон не похож на российский — например +7 921 123-45-67")
+    a, z = await city(b.from_city), await city(b.to_city)
+
+    def place(c, name):
+        return {"city": name.strip(), "cityId": c["CityId"], "lat": c["Latitude"], "lon": c["Longitude"]}
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    day = b.load_date.isoformat() + "T00:00:00"
+    name = b.contact.strip() or "контакт заказчика"
+    raw = {"id": f"manual-{secrets.token_hex(6)}", "manual": True, "loadNumber": "вручную", "note": b.note.strip(),
+           "addDate": now, "changeDate": now, "route": {"distance": b.distance or None},
+           "loading": {"location": place(a, b.from_city), "firstDate": day, "lastDate": day},
+           "unloading": {"location": place(z, b.to_city)},
+           "load": {"weight": b.weight, "cargoType": b.cargo.strip() or "груз", "volume": 0, "height": 0},
+           "truck": {"carTypesBitSum": t[0]["body_mask"]},  # кузов подобрал логист
+           "rate": {"price": b.price or None, "moneyType": b.money}}
+    if b.firm.strip() or phone:
+        raw["firm"] = {"name": b.firm.strip() or "Заказчик",
+                       "contacts": [{"id": 0, "name": name, "phones": [{"number": phone}]}] if phone else []}
+    s, verdict, reasons, m = score(raw, t[0], q("select * from rules where active=1"), settings())
+    DB.execute("insert into loads(id,truck_id,raw,score,verdict,reasons,metrics,first_seen,updated) values(?,?,?,?,?,?,?,?,?)",
+               (raw["id"], b.truck_id, json.dumps(raw, ensure_ascii=False), s, verdict,
+                json.dumps(reasons, ensure_ascii=False), json.dumps(m), time.time(), time.time()))
+    auth.record(DB, "load_manual", raw["id"], f"{b.from_city} → {b.to_city}")
+    return load_row(q("select * from loads where id=?", raw["id"])[0])
 
 
 class Reason(BaseModel):
@@ -1089,6 +1141,13 @@ async def start_dialog(l, goal, by_agent=False):
     if not firm.get("contacts"):
         raise ValueError("У груза скрыт заказчик — написать некому")
     c = firm["contacts"][0]
+    if raw.get("manual"):  # груз внёс логист: чата АТИ нет, диалог «только звонок»
+        did = DB.execute("insert into dialogs(load_id,chat_id,goal,status,summary,created,updated,by_agent) values(?,?,?,?,?,?,?,?)",
+                         (l["id"], None, goal, "waiting", "Груз внесён вручную — узнаем условия по телефону",
+                          time.time(), time.time(), int(by_agent))).lastrowid
+        DB.execute("update loads set status='dialog' where id=?", (l["id"],))
+        log(f"Груз внесён вручную: диалог #{did} по телефону", "agent")
+        return q("select * from dialogs where id=?", did)[0]
     try:
         chat_id = await ati.open_chat(f"{firm['id']}.{c['id']}", c["name"], firm.get("name", ""))
     except Exception as e:
@@ -1141,8 +1200,9 @@ async def _auto_start():
                f" and l.score>=? and l.updated>=? and {where} order by l.score desc, l.updated desc", st["auto_score"], fresh_edge(st), *args):
         if started >= min(st["auto_per_cycle"], left):
             break
-        firm = json.loads(l["raw"]).get("firm") or {}
-        if not firm.get("contacts") or firm.get("id") in busy_firms:
+        raw = json.loads(l["raw"])
+        firm = raw.get("firm") or {}
+        if raw.get("manual") or not firm.get("contacts") or firm.get("id") in busy_firms:
             continue  # одной фирме — один диалог за раз
         try:
             await start_dialog(l, st["default_goal"], by_agent=True)

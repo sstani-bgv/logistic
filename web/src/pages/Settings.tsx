@@ -15,6 +15,7 @@ const GROUPS: { title: string; fields: Field[] }[] = [
     { k: "min_rate_km", label: "Минимум ₽/км чистыми", type: "number" },
     { k: "threshold", label: "Порог оценки «подходит»", hint: "0–100", type: "number" },
     { k: "vat", label: "НДС, %", type: "number" },
+    { k: "scan_auto", label: "Автоматически просматривать биржу АТИ", hint: "выкл — поиск только по кнопке", type: "bool" },
     { k: "scan_minutes", label: "Проход по бирже, мин", type: "number" },
     { k: "pages", label: "Страниц выдачи на машину", type: "number" },
   ] },

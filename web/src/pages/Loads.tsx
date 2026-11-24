@@ -61,7 +61,7 @@ export default function LoadsPage() {
       </div>
       <div className={mode === "general" ? "" : "hidden"}><SearchPanel onResults={setGeneral} onDefaultMode={setMode} /></div>
       {mode === "general" && <>
-        {general?.public_only && <p className="text-sm text-muted-foreground">АТИ не передаёт сюда ставки и заказчиков. Откройте груз кнопкой «АТИ», впишите ставку — ассистент посчитает выгоду.</p>}
+        {general?.public_only && <p className="text-sm text-muted-foreground">АТИ не передаёт сюда ставки и заказчиков. Сумму смотрите кнопкой «АТИ» и впишите — ассистент посчитает выгоду.</p>}
         {!general ? <div role="status" className="text-sm text-muted-foreground">Задайте фильтры и нажмите «Найти грузы».</div> : general.loads.length === 0 ? <p className="text-sm text-muted-foreground">По этим фильтрам грузов нет. Попробуйте увеличить радиус или выбрать другой кузов.</p> : general.loads.map((load) => <LoadCard key={load.id} l={load} view="all" general onReject={() => {}} onDelegate={() => {}} profile={general.profile} onComplete={(rate) => setManual({ ...fromLoad(load), ...rate })} />)}
       </>}
 
@@ -143,9 +143,9 @@ function ManualLoadDialog({ init, trucks, onClose, onDone }: { init: Partial<Man
   )
 }
 
-function ScoreRing({ v, filtered, partial }: { v: number; filtered: boolean; partial?: boolean }) {
+function ScoreRing({ v, filtered, partial, asked }: { v: number; filtered: boolean; partial?: boolean; asked?: boolean }) {
   if (partial) return (
-    <div className="grid size-14 shrink-0 place-items-center rounded-full border-2 border-dashed text-center text-[11px] leading-tight text-muted-foreground" title="Балла нет: АТИ не прислала ставку. Впишите её — груз пересчитается.">нет<br />ставки</div>
+    <div className="grid size-14 shrink-0 place-items-center rounded-full border-2 border-dashed text-center text-[11px] leading-tight text-muted-foreground" title={asked ? "Заказчик не указал ставку — её надо спросить" : "АТИ показывает ставку только на сайте. Впишите её — груз пересчитается."}>{asked ? "запрос" : <>нет<br />ставки</>}</div>
   )
   const color = filtered ? "text-muted-foreground" : v >= 80 ? "text-emerald-600" : v >= 65 ? "text-primary" : "text-amber-600"
   return (
@@ -169,7 +169,7 @@ function LoadCard({ l: orig, truck, view, onReject, onDelegate, onComplete, prof
   return (
     <div className="rounded-xl border bg-card p-4 shadow-xs transition-shadow hover:shadow-sm">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center">
-        <ScoreRing v={l.score} filtered={l.verdict === "filtered"} partial={m.partial && !blocks.length} />
+        <ScoreRing v={l.score} filtered={l.verdict === "filtered"} partial={m.partial && !blocks.length} asked={m.asked} />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-base font-semibold">
             <span>{r.loading.location.city}</span><ArrowRight className="size-4 text-muted-foreground" /><span>{r.unloading.location.city}</span>
@@ -194,9 +194,9 @@ function LoadCard({ l: orig, truck, view, onReject, onDelegate, onComplete, prof
 
         <div className="flex flex-wrap items-center gap-x-5 gap-y-3 lg:w-[430px] lg:shrink-0 lg:flex-nowrap lg:justify-end">
           <div className="text-right">
-            {m.partial && profile ? <RateForm load={orig} profile={profile} onRated={setOwn} /> : m.partial ? <div className="whitespace-nowrap text-sm text-muted-foreground">Ставка на АТИ</div> : <>
+            {m.partial && profile ? <div className="flex flex-col gap-1"><RateForm load={orig} profile={profile} onRated={setOwn} /><PayInfo l={l} /></div> : m.partial ? <div className="text-sm text-muted-foreground">{m.asked ? "Ставка по запросу" : "Ставка на АТИ"}<PayInfo l={l} /></div> : <>
               <div className="num text-lg font-semibold">{m.gross ? rub(m.gross) : <span className="text-muted-foreground">запрос</span>}</div>
-              <div className="text-xs text-muted-foreground">{m.per_km ? `${m.per_km} ₽/км чистыми · ` : ""}{m.money}</div>
+              <div className="text-xs text-muted-foreground">{m.per_km ? `${m.per_km} ₽/км чистыми · ` : ""}{m.money}{m.pay ? `, ${m.pay}` : ""}</div>
               {mine && <button type="button" className="whitespace-nowrap text-xs text-primary hover:underline" onClick={() => setOwn(null)}>изменить ставку</button>}
             </>}
           </div>
@@ -223,9 +223,14 @@ function LoadCard({ l: orig, truck, view, onReject, onDelegate, onComplete, prof
   )
 }
 
+function PayInfo({ l }: { l: Load }) {
+  const t = [l.metrics.asked ? "ставка по запросу" : l.metrics.money !== "—" && l.metrics.money, l.metrics.pay].filter(Boolean).join(", ")
+  return t ? <div className="text-left text-xs text-muted-foreground">{t}</div> : null
+}
+
 function RateForm({ load, profile, onRated }: { load: Load; profile: Profile; onRated: (v: { id: string; price: number; money: number; res: Pick<Load, "score" | "verdict" | "reasons" | "metrics"> }) => void }) {
   const [price, setPrice] = useState("")
-  const [money, setMoney] = useState(1)
+  const [money, setMoney] = useState(({ "без НДС": 2, "наличными": 3, "на карту": 23 } as Record<string, number>)[load.metrics.money] ?? 1)
   const [busy, setBusy] = useState(false)
   const submit = async () => {
     setBusy(true)

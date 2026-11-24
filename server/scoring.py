@@ -31,6 +31,18 @@ def gross_price(rate):
     return rate.get("price") or rate.get("priceNds") or None
 
 
+def pay_terms(rate):
+    """Условия оплаты из объявления — АТИ отдаёт их и без ставки."""
+    out = []
+    if rate.get("prepayEnabled") and rate.get("prepay"):
+        out.append(f"предоплата {rate['prepay']}%")
+    if rate.get("payOnUnload"):
+        out.append("оплата на выгрузке")
+    elif rate.get("payDaysEnabled") and rate.get("payDays"):
+        out.append(f"отсрочка {rate['payDays']} дн.")
+    return ", ".join(out)
+
+
 def score(load, truck, rules, settings):
     """-> (score 0..100, verdict 'relevant'|'filtered', reasons[{t, d, kind}], metrics)"""
     reasons, s, blocked = [], 60, False
@@ -81,9 +93,10 @@ def score(load, truck, rules, settings):
     net = net_price(rate, settings["vat"])
     per_km = net / (dist + dead) if net else None
     partial = bool(load.get("publicOnly")) and per_km is None  # ставку АТИ не отдала: балл не про выгоду
-    mt = "—" if partial else MONEY.get(rate.get("moneyType"), "—")  # в публичной выдаче форма оплаты — не из объявления
+    asked = partial and rate.get("moneyType") == 0  # «запрос»: заказчик ставку не указал, скрывать нечего
+    mt = MONEY.get(rate.get("moneyType"), "—")
     if per_km is None:
-        add("Без ставки: оценены только маршрут, вес, кузов и даты" if partial else "Ставка «запрос» — агент уточнит", -8)
+        add("Без ставки: оценены только маршрут, вес, кузов и даты" if partial and not asked else "Ставка «запрос» — агент уточнит", -8)
     else:
         target = settings["min_rate_km"]
         if per_km >= target * 1.15:
@@ -124,7 +137,7 @@ def score(load, truck, rules, settings):
     s = max(0, min(100, round(s)))
     verdict = "filtered" if blocked or s < settings["threshold"] else "relevant"
     metrics = {"dist": round(dist), "dead": round(dead), "net": round(net) if net else None, "gross": gross_price(rate),
-               "per_km": round(per_km, 1) if per_km else None, "money": mt, "partial": partial}
+               "per_km": round(per_km, 1) if per_km else None, "money": mt, "partial": partial, "asked": asked, "pay": pay_terms(rate)}
     return s, verdict, reasons, metrics
 
 

@@ -72,7 +72,7 @@ def test_hidden_rate_is_partial_and_rescored_with_own_rate(monkeypatch, make_cli
     c = make_client("logist")
     page = c.post("/api/search", json={}).json()
     l = page["loads"][0]
-    assert l["metrics"]["partial"] and l["metrics"]["money"] == "—"
+    assert l["metrics"]["partial"] and l["metrics"]["money"] == "с НДС" and not l["metrics"]["asked"]
     texts = " ".join(x["t"] for x in l["reasons"])
     assert "Без ставки" in texts and "точкой поиска" in texts and "машиной" not in texts
 
@@ -83,3 +83,19 @@ def test_hidden_rate_is_partial_and_rescored_with_own_rate(monkeypatch, make_cli
     assert good["score"] > l["score"] > bad["score"]
     assert rate(price=0).status_code == 422 and rate(money=9).status_code == 400 and rate(load={"id": "x"}).status_code == 400
     assert not main.q("select 1 from loads where id='pub'")
+
+
+def test_public_pay_terms_and_request():
+    from scoring import pay_terms, score
+    from test_fleet import iso, load_raw
+    p = {"lat": 59.94, "lon": 30.32, "radius": 150, "body_mask": 1, "capacity": 20, "height": 2.7, "free_from": iso(0)}
+    st = {"vat": 22, "min_rate_km": 55, "threshold": 55}
+    def m(**rate):
+        _, _, why, x = score({**load_raw(), "rate": rate, "publicOnly": True}, p, [], st)
+        return x, " ".join(r["t"] for r in why)
+    x, why = m(moneyType=0)
+    assert x["asked"] and x["money"] == "запрос" and "запрос" in why and "скрыта" not in why
+    x, _ = m(moneyType=23, prepayEnabled=True, prepay=50, payDaysEnabled=True, payDays=5)
+    assert x["money"] == "на карту" and x["pay"] == "предоплата 50%, отсрочка 5 дн."
+    assert pay_terms({"payOnUnload": True, "payDaysEnabled": True, "payDays": 5}) == "оплата на выгрузке"
+    assert pay_terms({"prepay": 50, "payDays": 5}) == ""  # галочки сняты — условий нет

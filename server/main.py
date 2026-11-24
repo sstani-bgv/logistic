@@ -1766,7 +1766,9 @@ async def rate_by_hand(b: RateByHand):
     origin = await city(b.profile.city_name)
     profile = {**b.profile.model_dump(), "city_id": origin["CityId"], "lat": origin["Latitude"],
                "lon": origin["Longitude"], "free_from": date.today().isoformat()}
-    raw = {**b.load, "rate": {"price": b.price, "moneyType": b.money}}
+    old = b.load.get("rate") if isinstance(b.load.get("rate"), dict) else {}
+    raw = {**b.load, "rate": {**{k: old.get(k) for k in ("prepay", "prepayEnabled", "payDays", "payDaysEnabled", "payOnUnload")},
+                              "price": b.price, "moneyType": b.money}}
     try:
         value, verdict, reasons, metrics = score(raw, profile, q("select * from rules where active=1"), settings())
     except (KeyError, TypeError, ValueError, AttributeError) as e:

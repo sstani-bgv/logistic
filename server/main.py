@@ -1048,6 +1048,53 @@ class ManualLoad(BaseModel):
     note: str = Field("", max_length=1000)
 
 
+class AdText(BaseModel):
+    text: str = Field(min_length=10, max_length=6000)
+
+
+AD_MONEY = {"с ндс": 1, "без ндс": 2, "наличными": 3, "на карту": 23}
+
+
+def ad_price_in_text(price, text):
+    """Модель не должна придумать ставку: 95000 ищем как 95000, «95 000», «95.000», «95 тыс», «95 т.р.»."""
+    joined = re.sub(r"(?<=\d)[\s.,'](?=\d{3}(?!\d))", "", text)
+    if re.search(rf"(?<!\d){price}(?!\d)", joined):
+        return True
+    return price % 1000 == 0 and re.search(rf"(?<!\d){price // 1000}\s*(тыс|т\.?\s*р|к\b)", text.lower()) is not None
+
+
+@app.post("/api/loads/parse")
+async def parse_ad(b: AdText):
+    """Логист вставил текст объявления → поля формы. В базу ничего не пишем: человек проверяет и жмёт «Оценить»."""
+    try:
+        r = await agent.parse_ad(b.text)
+    except llm.LLMError as e:
+        mark("llm", False, e)
+        raise HTTPException(502, f"ИИ не разобрал объявление: {e}") from e
+    mark("llm", True)
+    out, missing = {k: v for k, v in r.items() if v not in (None, "") and k not in ("money", "price", "phone", "load_date")}, []
+    price = int(r["price"] or 0)
+    if 0 < price <= 100_000_000 and ad_price_in_text(price, b.text):
+        out["price"] = price
+        if m := AD_MONEY.get((r["money"] or "").strip().lower()):
+            out["money"] = m
+        else:
+            missing.append("форма оплаты")
+    else:
+        missing.append("ставка")
+    phone = calls.norm_phone(r["phone"])
+    if phone and phone[-10:] in re.sub(r"\D", "", b.text):
+        out["phone"] = phone
+    else:
+        missing.append("телефон")
+    try:
+        out["load_date"] = date.fromisoformat((r["load_date"] or "")[:10]).isoformat()
+    except ValueError:
+        missing.append("дата погрузки")
+    missing += [n for k, n in (("from_city", "откуда"), ("to_city", "куда"), ("weight", "вес")) if k not in out]
+    return {"fields": out, "missing": missing}
+
+
 @app.post("/api/loads/manual")
 async def add_manual_load(b: ManualLoad):
     t = q("select * from trucks where id=?", b.truck_id)

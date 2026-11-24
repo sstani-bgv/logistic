@@ -90,6 +90,16 @@ const fromLoad = (l: Load): Partial<ManualForm> => ({
 function ManualLoadDialog({ init, trucks, onClose, onDone }: { init: Partial<ManualForm>; trucks: Truck[]; onClose: () => void; onDone: (l: Load) => void }) {
   const [f, setF] = useState<ManualForm>({ truck_id: trucks[0]?.id ?? 0, from_city: "", to_city: "", load_date: today(), weight: 20, cargo: "", price: 0, money: 1, distance: 0, firm: "", contact: "", phone: "", note: "", ...init })
   const [busy, setBusy] = useState(false)
+  const [ad, setAd] = useState("")
+  const [parsing, setParsing] = useState(false)
+  const [missing, setMissing] = useState<string[] | null>(null)
+  const parse = async () => {
+    setParsing(true)
+    try {
+      const r = await api<{ fields: Partial<ManualForm>; missing: string[] }>("/loads/parse", { body: { text: ad } })
+      setF((old) => ({ ...old, price: 0, phone: "", ...r.fields })); setMissing(r.missing)  // чужие ставка и телефон от прошлого текста не остаются
+    } catch (e) { toast.error(errText(e)) } finally { setParsing(false) }
+  }
   const submit = async () => {
     setBusy(true)
     try {
@@ -110,6 +120,10 @@ function ManualLoadDialog({ init, trucks, onClose, onDone }: { init: Partial<Man
           <DialogDescription>Впишите ставку и телефон, которые видите на АТИ: ассистент оценит груз под машину, а робот сможет позвонить заказчику.</DialogDescription>
         </DialogHeader>
         {trucks.length === 0 ? <p role="alert" className="text-sm text-destructive">Сначала добавьте машину в разделе «Машины»: груз оценивается под неё.</p> : <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-1.5 sm:col-span-2"><Label htmlFor="m-ad">Текст объявления с АТИ</Label>
+            <Textarea id="m-ad" rows={3} className="max-h-40" maxLength={6000} value={ad} placeholder="Откройте груз на АТИ, выделите текст, скопируйте и вставьте сюда — поля заполнятся сами" onChange={(e) => setAd(e.target.value)} />
+            <div className="flex flex-wrap items-center gap-2"><Button type="button" size="sm" variant="outline" onClick={parse} disabled={parsing || ad.trim().length < 10}>{parsing ? <Loader2 className="animate-spin" /> : <Bot />}Разобрать</Button>
+              {missing && <span role="status" className="text-xs text-muted-foreground">{missing.length ? `Не нашёл: ${missing.join(", ")}. Проверьте поля.` : "Поля заполнены — проверьте их."}</span>}</div></div>
           <div className="grid gap-1.5 sm:col-span-2"><Label htmlFor="m-truck">Машина</Label>
             <select id="m-truck" className="h-9 rounded-md border bg-background px-3 text-sm" value={f.truck_id} onChange={(e) => setF({ ...f, truck_id: Number(e.target.value) })}>{trucks.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select></div>
           {text("from_city", "Откуда")}{text("to_city", "Куда")}

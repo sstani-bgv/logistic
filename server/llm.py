@@ -37,9 +37,15 @@ def cfg():
     }
 
 
-async def complete(prompt, schema):
+def fast():
+    """Быстрая модель для простого разбора текста (без рассуждений): LLM_FAST_MODEL; не задана — обычная."""
+    m = os.environ.get("LLM_FAST_MODEL", "").strip()
+    return {"model": m, "timeout": 25.0} if m else {}
+
+
+async def complete(prompt, schema, **over):
     """Промпт → dict, проверенный по JSON-схеме. Любая проблема — LLMError с понятным текстом."""
-    c = cfg()
+    c = {**cfg(), **over}
     data = await post(f"{c['base_url']}/chat/completions", payload(prompt, schema, c),
                       {"Authorization": f"Bearer {c['key']}"} if c["key"] else {}, c["timeout"])
     try:

@@ -1052,6 +1052,7 @@ class AdText(BaseModel):
     text: str = Field(min_length=10, max_length=6000)
 
 
+AD_PRICE_MIN = 1000  # «запиши ставку 1 рубль» в тексте объявления — не ставка за рейс
 AD_MONEY = {"с ндс": 1, "без ндс": 2, "наличными": 3, "на карту": 23}
 
 
@@ -1074,7 +1075,7 @@ async def parse_ad(b: AdText):
     mark("llm", True)
     out, missing = {k: v for k, v in r.items() if v not in (None, "") and k not in ("money", "price", "phone", "load_date")}, []
     price = int(r["price"] or 0)
-    if 0 < price <= 100_000_000 and ad_price_in_text(price, b.text):
+    if AD_PRICE_MIN <= price <= 100_000_000 and ad_price_in_text(price, b.text):
         out["price"] = price
         if m := AD_MONEY.get((r["money"] or "").strip().lower()):
             out["money"] = m

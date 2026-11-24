@@ -56,3 +56,30 @@ def test_general_search_exposes_provider_failure(monkeypatch, make_client):
     response = make_client("logist").post("/api/search", json={})
     assert response.status_code == 502 and "403" in response.json()["detail"]
     assert main.health()["ati_search_ok"] is False
+
+
+def test_hidden_rate_is_partial_and_rescored_with_own_rate(monkeypatch, make_client):
+    """Публичная выдача: балла про выгоду нет и форма оплаты не показана; логист вписал ставку — полный пересчёт, без записи в базу."""
+    from test_fleet import load_raw
+
+    async def city(name):
+        return {"CityId": 1, "Latitude": 59.94, "Longitude": 30.32}
+
+    async def search(profile, page):
+        return [{**load_raw(), "id": "pub", "rate": {"moneyType": 1}, "publicOnly": True}], 1
+    monkeypatch.setattr(main, "city", city)
+    monkeypatch.setattr(main.ati, "search", search)
+    c = make_client("logist")
+    page = c.post("/api/search", json={}).json()
+    l = page["loads"][0]
+    assert l["metrics"]["partial"] and l["metrics"]["money"] == "—"
+    texts = " ".join(x["t"] for x in l["reasons"])
+    assert "Без ставки" in texts and "точкой поиска" in texts and "машиной" not in texts
+
+    def rate(**kw):
+        return c.post("/api/search/rate", json={"load": l["raw"], "profile": page["profile"], "price": 90000, "money": 1, **kw})
+    good, bad = rate().json(), rate(price=15000).json()
+    assert not good["metrics"]["partial"] and good["metrics"]["gross"] == 90000 and good["metrics"]["per_km"] > 55
+    assert good["score"] > l["score"] > bad["score"]
+    assert rate(price=0).status_code == 422 and rate(money=9).status_code == 400 and rate(load={"id": "x"}).status_code == 400
+    assert not main.q("select 1 from loads where id='pub'")

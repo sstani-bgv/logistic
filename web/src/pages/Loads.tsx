@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { api, errText, usePoll, rub, ddmm, ago, atiLink, type Load, type Truck } from "@/lib/api"
 import { cn } from "@/lib/utils"
-import SearchPanel, { type SearchResult } from "@/components/SearchPanel"
+import SearchPanel, { type Profile, type SearchResult } from "@/components/SearchPanel"
 
 const VIEWS = [
   { id: "relevant", label: "Подходят" },
@@ -61,8 +61,8 @@ export default function LoadsPage() {
       </div>
       <div className={mode === "general" ? "" : "hidden"}><SearchPanel onResults={setGeneral} onDefaultMode={setMode} /></div>
       {mode === "general" && <>
-        {general?.public_only && <p className="text-sm text-muted-foreground">АТИ показывает публичные объявления. Контакты и ставки доступны при открытии груза в аккаунте АТИ.</p>}
-        {!general ? <div role="status" className="text-sm text-muted-foreground">Задайте фильтры и нажмите «Найти грузы».</div> : general.loads.length === 0 ? <p className="text-sm text-muted-foreground">По этим фильтрам грузов нет. Попробуйте увеличить радиус или выбрать другой кузов.</p> : general.loads.map((load) => <LoadCard key={load.id} l={load} view="all" general onReject={() => {}} onDelegate={() => {}} onComplete={() => setManual(fromLoad(load))} />)}
+        {general?.public_only && <p className="text-sm text-muted-foreground">АТИ не передаёт сюда ставки и заказчиков. Откройте груз кнопкой «АТИ», впишите ставку — ассистент посчитает выгоду.</p>}
+        {!general ? <div role="status" className="text-sm text-muted-foreground">Задайте фильтры и нажмите «Найти грузы».</div> : general.loads.length === 0 ? <p className="text-sm text-muted-foreground">По этим фильтрам грузов нет. Попробуйте увеличить радиус или выбрать другой кузов.</p> : general.loads.map((load) => <LoadCard key={load.id} l={load} view="all" general onReject={() => {}} onDelegate={() => {}} profile={general.profile} onComplete={(rate) => setManual({ ...fromLoad(load), ...rate })} />)}
       </>}
 
       {mode === "trucks" && (!loads ? <Loader2 className="mx-auto size-6 animate-spin text-muted-foreground" /> :
@@ -129,7 +129,10 @@ function ManualLoadDialog({ init, trucks, onClose, onDone }: { init: Partial<Man
   )
 }
 
-function ScoreRing({ v, filtered }: { v: number; filtered: boolean }) {
+function ScoreRing({ v, filtered, partial }: { v: number; filtered: boolean; partial?: boolean }) {
+  if (partial) return (
+    <div className="grid size-14 shrink-0 place-items-center rounded-full border-2 border-dashed text-center text-[11px] leading-tight text-muted-foreground" title="Балла нет: АТИ не прислала ставку. Впишите её — груз пересчитается.">нет<br />ставки</div>
+  )
   const color = filtered ? "text-muted-foreground" : v >= 80 ? "text-emerald-600" : v >= 65 ? "text-primary" : "text-amber-600"
   return (
     <div className={cn("relative grid size-14 shrink-0 place-items-center", color)}>
@@ -142,14 +145,17 @@ function ScoreRing({ v, filtered }: { v: number; filtered: boolean }) {
   )
 }
 
-function LoadCard({ l, truck, view, onReject, onDelegate, onComplete, general = false }: { l: Load; truck?: Truck; view: string; general?: boolean; onReject: () => void; onDelegate: () => void; onComplete?: () => void }) {
+function LoadCard({ l: orig, truck, view, onReject, onDelegate, onComplete, profile, general = false }: { l: Load; profile?: Profile; truck?: Truck; view: string; general?: boolean; onReject: () => void; onDelegate: () => void; onComplete?: (rate: { price?: number; money?: number }) => void }) {
+  const [own, setOwn] = useState<{ id: string; price: number; money: number; res: Pick<Load, "score" | "verdict" | "reasons" | "metrics"> } | null>(null)
+  const mine = own?.id === orig.id ? own : null  // ставка логиста — только для этой карточки
+  const l = mine ? { ...orig, ...mine.res } : orig
   const r = l.raw, m = l.metrics, f = r.firm
   const blocks = l.reasons.filter((x) => x.kind === "block")
   const shown = view === "filtered" && blocks.length ? blocks : l.reasons.filter((x) => x.kind !== "info").sort((a, b) => Math.abs(b.d) - Math.abs(a.d)).slice(0, 5)
   return (
     <div className="rounded-xl border bg-card p-4 shadow-xs transition-shadow hover:shadow-sm">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center">
-        <ScoreRing v={l.score} filtered={l.verdict === "filtered"} />
+        <ScoreRing v={l.score} filtered={l.verdict === "filtered"} partial={m.partial && !blocks.length} />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-base font-semibold">
             <span>{r.loading.location.city}</span><ArrowRight className="size-4 text-muted-foreground" /><span>{r.unloading.location.city}</span>
@@ -172,13 +178,16 @@ function LoadCard({ l, truck, view, onReject, onDelegate, onComplete, general = 
           {l.reject_reason && <div className="mt-2 text-sm text-muted-foreground">Логист: «{l.reject_reason}»</div>}
         </div>
 
-        <div className="flex shrink-0 items-center gap-5 lg:w-[430px] lg:justify-end">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-3 lg:w-[430px] lg:shrink-0 lg:flex-nowrap lg:justify-end">
           <div className="text-right">
-            <div className="num text-lg font-semibold">{m.gross ? rub(m.gross) : <span className="text-muted-foreground">{r.publicOnly ? "Ставка скрыта" : "запрос"}</span>}</div>
-            <div className="text-xs text-muted-foreground">{m.per_km ? `${m.per_km} ₽/км чистыми · ` : ""}{m.money}</div>
+            {m.partial && profile ? <RateForm load={orig} profile={profile} onRated={setOwn} /> : m.partial ? <div className="whitespace-nowrap text-sm text-muted-foreground">Ставка на АТИ</div> : <>
+              <div className="num text-lg font-semibold">{m.gross ? rub(m.gross) : <span className="text-muted-foreground">запрос</span>}</div>
+              <div className="text-xs text-muted-foreground">{m.per_km ? `${m.per_km} ₽/км чистыми · ` : ""}{m.money}</div>
+              {mine && <button type="button" className="whitespace-nowrap text-xs text-primary hover:underline" onClick={() => setOwn(null)}>изменить ставку</button>}
+            </>}
           </div>
           <div className="w-40 text-sm">
-            <div className="truncate font-medium" title={f?.name}>{f?.name ?? "Заказчик скрыт"}</div>
+            <div className="truncate font-medium" title={f?.name}>{f?.name ?? (r.publicOnly ? "Заказчик на АТИ" : "Заказчик скрыт")}</div>
             <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
               {f?.isConfirmedShipper && <Tooltip><TooltipTrigger><ShieldCheck className="size-3.5 text-emerald-600" /></TooltipTrigger><TooltipContent>Подтверждённый грузовладелец</TooltipContent></Tooltip>}
               {f?.profile && <span>{f.profile}</span>}
@@ -190,13 +199,34 @@ function LoadCard({ l, truck, view, onReject, onDelegate, onComplete, general = 
             {!general && view !== "rejected" && <Button size="sm" onClick={onDelegate} disabled={!f?.contacts?.length} title={f?.contacts?.length ? undefined : "Заказчик скрыт — написать некому, откройте груз на АТИ"}><Bot />Поручить агенту</Button>}
             <div className="flex gap-1.5">
               {!general && view !== "rejected" && <Button size="sm" variant="outline" onClick={onReject}><ThumbsDown />Не то</Button>}
-              {onComplete && <Button size="sm" variant="outline" onClick={onComplete} title="Вписать ставку и телефон, которые вы видите на АТИ, — ассистент оценит груз"><Plus />Дополнить</Button>}
+              {onComplete && <Button size="sm" variant="outline" onClick={() => onComplete(mine ? { price: mine.price, money: mine.money } : {})} title="Вписать фирму и телефон с АТИ и взять груз в работу под свою машину"><Plus />В работу</Button>}
               {!r.manual && <Button size="sm" variant="ghost" asChild><a href={atiLink(r.id)} target="_blank" rel="noreferrer"><ExternalLink />АТИ</a></Button>}
             </div>
           </div>
         </div>
       </div>
     </div>
+  )
+}
+
+function RateForm({ load, profile, onRated }: { load: Load; profile: Profile; onRated: (v: { id: string; price: number; money: number; res: Pick<Load, "score" | "verdict" | "reasons" | "metrics"> }) => void }) {
+  const [price, setPrice] = useState("")
+  const [money, setMoney] = useState(1)
+  const [busy, setBusy] = useState(false)
+  const submit = async () => {
+    setBusy(true)
+    try {
+      onRated({ id: load.id, price: Number(price), money, res: await api("/search/rate", { body: { load: load.raw, profile, price: Number(price), money } }) })
+    } catch (e) { toast.error(errText(e)) } finally { setBusy(false) }
+  }
+  return (
+    <form className="flex items-center gap-1.5" onSubmit={(e) => { e.preventDefault(); if (Number(price) > 0 && !busy) void submit() }}>
+      <div className="flex flex-col gap-1">
+        <Input aria-label="Ставка с АТИ, ₽" className="h-8 w-28" inputMode="numeric" placeholder="Ставка, ₽" value={price} onChange={(e) => setPrice(e.target.value.replace(/\D/g, "").slice(0, 8))} />
+        <select aria-label="Форма оплаты" className="h-7 w-28 rounded-md border bg-background px-2 text-xs" value={money} onChange={(e) => setMoney(Number(e.target.value))}><option value={1}>с НДС</option><option value={2}>без НДС</option><option value={3}>наличными</option><option value={23}>на карту</option></select>
+      </div>
+      <Button type="submit" size="sm" disabled={busy || !(Number(price) > 0)}>{busy ? <Loader2 className="animate-spin" /> : "Оценить"}</Button>
+    </form>
   )
 }
 

@@ -53,9 +53,9 @@ def score(load, truck, rules, settings):
     straight = km((truck["lat"], truck["lon"]), lpos)
     dead = straight * ROAD_FACTOR
     if dead <= 30:
-        add(f"Погрузка рядом с машиной (≈{dead:.0f} км)", 10)
+        add(f"Погрузка рядом с {'машиной' if truck.get('name') else 'точкой поиска'} (≈{dead:.0f} км)", 10)
     elif straight <= truck["radius"]:
-        add(f"Холостой пробег ≈{dead:.0f} км", -round(dead / 30))
+        add(f"{'Холостой пробег' if truck.get('name') else 'От точки поиска'} ≈{dead:.0f} км", -round(dead / 30))
     else:
         add(f"Погрузка далеко: {straight:.0f} км по прямой при радиусе {truck['radius']}", kind="block")
 
@@ -80,9 +80,10 @@ def score(load, truck, rules, settings):
     rate = load["rate"]
     net = net_price(rate, settings["vat"])
     per_km = net / (dist + dead) if net else None
-    mt = MONEY.get(rate.get("moneyType"), "—")
+    partial = bool(load.get("publicOnly")) and per_km is None  # ставку АТИ не отдала: балл не про выгоду
+    mt = "—" if partial else MONEY.get(rate.get("moneyType"), "—")  # в публичной выдаче форма оплаты — не из объявления
     if per_km is None:
-        add("Ставка скрыта АТИ — оценка неполная: только маршрут, вес, кузов и даты" if load.get("publicOnly") else "Ставка «запрос» — агент уточнит", -8)
+        add("Без ставки: оценены только маршрут, вес, кузов и даты" if partial else "Ставка «запрос» — агент уточнит", -8)
     else:
         target = settings["min_rate_km"]
         if per_km >= target * 1.15:
@@ -123,7 +124,7 @@ def score(load, truck, rules, settings):
     s = max(0, min(100, round(s)))
     verdict = "filtered" if blocked or s < settings["threshold"] else "relevant"
     metrics = {"dist": round(dist), "dead": round(dead), "net": round(net) if net else None, "gross": gross_price(rate),
-               "per_km": round(per_km, 1) if per_km else None, "money": mt}
+               "per_km": round(per_km, 1) if per_km else None, "money": mt, "partial": partial}
     return s, verdict, reasons, metrics
 
 

@@ -5,11 +5,11 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 
-type Profile = {
+export type Profile = {
   city_name: string; to_city_name: string; radius: number; body_mask: number
   capacity: number; height: number; default_mode: "general" | "trucks"
 }
-export type SearchResult = { loads: Load[]; total: number; page: number; public_only: boolean }
+export type SearchResult = { loads: Load[]; total: number; page: number; public_only: boolean; profile: Profile }
 
 export default function SearchPanel({ settings = false, onResults, onDefaultMode }: {
   settings?: boolean

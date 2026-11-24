@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
 export type Reason = { t: string; d: number; kind: "plus" | "minus" | "block" | "info" }
-export type Metrics = { dist: number; dead: number; net: number | null; gross: number | null; per_km: number | null; money: string }
+export type Metrics = { dist: number; dead: number; net: number | null; gross: number | null; per_km: number | null; money: string; partial?: boolean }
 export type Firm = {
   id: string; name: string; profile?: string; claims?: number; isConfirmedShipper?: boolean
   rating?: { score: number }; contacts?: { id: number; name: string; phones?: { number: string }[] }[]

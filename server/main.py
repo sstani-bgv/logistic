@@ -1694,8 +1694,31 @@ async def general_search(b: SearchQuery):
                        "verdict": verdict, "reasons": reasons, "metrics": metrics, "status": "new"})
     result.sort(key=lambda load: load["score"], reverse=True)
     mark("ati_search", True)
-    return {"loads": result, "total": total, "page": b.page,
+    return {"loads": result, "total": total, "page": b.page, "profile": b.model_dump(exclude={"page"}),
             "public_only": any(load["raw"].get("publicOnly") for load in result)}
+
+
+class RateByHand(BaseModel):
+    load: dict
+    profile: SearchProfile
+    price: int = Field(gt=0, le=100_000_000)
+    money: int = 1
+
+
+@app.post("/api/search/rate")
+async def rate_by_hand(b: RateByHand):
+    """Логист вписал ставку, которую видит на АТИ, — пересчитать оценку груза из общего поиска. Ничего не сохраняем."""
+    if b.money not in (1, 2, 3, 23):
+        raise HTTPException(400, "Форма оплаты: с НДС, без НДС, наличными или на карту")
+    origin = await city(b.profile.city_name)
+    profile = {**b.profile.model_dump(), "city_id": origin["CityId"], "lat": origin["Latitude"],
+               "lon": origin["Longitude"], "free_from": date.today().isoformat()}
+    raw = {**b.load, "rate": {"price": b.price, "moneyType": b.money}}
+    try:
+        value, verdict, reasons, metrics = score(raw, profile, q("select * from rules where active=1"), settings())
+    except (KeyError, TypeError, ValueError, AttributeError) as e:
+        raise HTTPException(400, "Не удалось пересчитать этот груз — внесите его вручную") from e
+    return {"score": value, "verdict": verdict, "reasons": reasons, "metrics": metrics}
 
 
 @app.post("/api/trucks")

@@ -1064,6 +1064,12 @@ def ad_price_in_text(price, text):
     return price % 1000 == 0 and re.search(rf"(?<!\d){price // 1000}\s*(тыс|т\.?\s*р|к\b)", text.lower()) is not None
 
 
+def ad_phones(text):
+    """Все разные российские номера из текста, по порядку."""
+    found = re.findall(r"(?<!\d)(?:\+?7|8)[\s\-.]*\(?\d{3}\)?(?:[\s\-.]*\d){7}(?!\d)", text)
+    return list(dict.fromkeys(p for p in map(calls.norm_phone, found) if p))
+
+
 @app.post("/api/loads/parse")
 async def parse_ad(b: AdText):
     """Логист вставил текст объявления → поля формы. В базу ничего не пишем: человек проверяет и жмёт «Оценить»."""
@@ -1083,11 +1089,11 @@ async def parse_ad(b: AdText):
             missing.append("форма оплаты")
     else:
         missing.append("ставка")
-    phone = calls.norm_phone(r["phone"])
-    if phone and phone[-10:] in re.sub(r"\D", "", b.text):
-        out["phone"] = phone
+    phones = ad_phones(b.text)  # не из ответа модели: текст объявления может уговорить её подставить чужой номер
+    if len(phones) == 1:
+        out["phone"] = phones[0]
     else:
-        missing.append("телефон")
+        missing.append("телефон (в тексте их несколько — выберите сами)" if phones else "телефон")
     try:
         out["load_date"] = date.fromisoformat((r["load_date"] or "")[:10]).isoformat()
     except ValueError:

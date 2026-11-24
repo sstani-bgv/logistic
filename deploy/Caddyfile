@@ -30,3 +30,10 @@
 		Alt-Svc clear
 	}
 }
+# Проверка связи по голому IP: без этого Caddy уводит на https, а сертификата на IP нет — выглядит как «сайт не работает»
+http:// {
+	log
+	header Content-Type "text/plain; charset=utf-8"
+	header Cache-Control no-store
+	respond "Связь с сервером есть."
+}

@@ -30,6 +30,19 @@ export default function LoadsPage() {
   const { data: trucks } = usePoll<Truck[]>("/trucks", 15000)
   const [rejecting, setRejecting] = useState<Load | null>(null)
   const [delegating, setDelegating] = useState<Load | null>(null)
+  const [taking, setTaking] = useState<Load | null>(null)  // груз из общего поиска ждёт выбора машины
+  // общий поиск → груз в работу под машину → то же окно «Поручить агенту», что и у грузов под машину
+  const take = async (load: Load, truckId: number) => {
+    setTaking(null)
+    try { setDelegating(await api<Load>("/loads/take", { body: { load_id: load.id, truck_id: truckId } })) }
+    catch (e) { toast.error(errText(e)) }
+  }
+  const delegateGeneral = (load: Load) => {
+    const free = (trucks ?? []).filter((t) => t.active)
+    if (free.length === 1) void take(load, free[0].id)
+    else if (free.length === 0) toast.error("Сначала добавьте машину в разделе «Машины»")
+    else setTaking(load)
+  }
   const tmap = Object.fromEntries((trucks ?? []).map((t) => [t.id, t]))
 
   return (
@@ -62,7 +75,8 @@ export default function LoadsPage() {
       <div className={mode === "general" ? "" : "hidden"}><SearchPanel onResults={setGeneral} onDefaultMode={setMode} /></div>
       {mode === "general" && <>
         {general?.public_only && <p className="text-sm text-muted-foreground">АТИ не передаёт сюда ставки и заказчиков. Сумму смотрите кнопкой «АТИ» и впишите — ассистент посчитает выгоду.</p>}
-        {!general ? <div role="status" className="text-sm text-muted-foreground">Задайте фильтры и нажмите «Найти грузы».</div> : general.loads.length === 0 ? <p className="text-sm text-muted-foreground">По этим фильтрам грузов нет. Попробуйте увеличить радиус или выбрать другой кузов.</p> : general.loads.map((load) => <LoadCard key={load.id} l={load} view="all" general onReject={() => {}} onDelegate={() => {}} profile={general.profile} onComplete={(rate) => setManual({ ...fromLoad(load), ...rate })} />)}
+        {!general ? <div role="status" className="text-sm text-muted-foreground">Задайте фильтры и нажмите «Найти грузы».</div> : general.loads.length === 0 ? <p className="text-sm text-muted-foreground">По этим фильтрам грузов нет. Попробуйте увеличить радиус или выбрать другой кузов.</p> : general.loads.map((load) => <LoadCard key={load.id} l={load} view="all" general onReject={() => {}} onDelegate={() => delegateGeneral(load)} profile={general.profile}
+          onComplete={load.raw.firm?.contacts?.length ? undefined : (rate) => setManual({ ...fromLoad(load), ...rate })} />)}
       </>}
 
       {mode === "trucks" && (!loads ? <Loader2 className="mx-auto size-6 animate-spin text-muted-foreground" /> :
@@ -73,6 +87,14 @@ export default function LoadsPage() {
           </div>)}
 
       <RejectDialog load={rejecting} onClose={() => setRejecting(null)} onDone={reload} />
+      <Dialog open={!!taking} onOpenChange={(o) => { if (!o) setTaking(null) }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Под какую машину?</DialogTitle><DialogDescription>Ассистент оценит груз под выбранную машину, дальше — сценарий для агента.</DialogDescription></DialogHeader>
+          <div className="flex flex-col gap-2">
+            {(trucks ?? []).filter((t) => t.active).map((t) => <Button key={t.id} variant="outline" className="justify-start" onClick={() => taking && take(taking, t.id)}>{t.name} · {t.city_name}</Button>)}
+          </div>
+        </DialogContent>
+      </Dialog>
       <DelegateDialog load={delegating} onClose={() => setDelegating(null)} onDone={reload} />
       {manual && <ManualLoadDialog init={manual} trucks={trucks ?? []} onClose={() => setManual(null)}
         onDone={(l) => { setManual(null); setMode("trucks"); setTruck("all"); setView(l.verdict === "filtered" ? "filtered" : "relevant"); void reload() }} />}
@@ -210,7 +232,7 @@ function LoadCard({ l: orig, truck, view, onReject, onDelegate, onComplete, prof
             </div>
           </div>
           <div className="flex flex-col gap-1.5">
-            {!general && view !== "rejected" && <Button size="sm" onClick={onDelegate} disabled={!f?.contacts?.length} title={f?.contacts?.length ? undefined : "Заказчик скрыт — написать некому, откройте груз на АТИ"}><Bot />Поручить агенту</Button>}
+            {view !== "rejected" && (!general || !!f?.contacts?.length) && <Button size="sm" onClick={onDelegate} disabled={!f?.contacts?.length} title={f?.contacts?.length ? undefined : "Заказчик скрыт — написать некому, откройте груз на АТИ"}><Bot />Поручить агенту</Button>}
             <div className="flex gap-1.5">
               {!general && view !== "rejected" && <Button size="sm" variant="outline" onClick={onReject}><ThumbsDown />Не то</Button>}
               {onComplete && <Button size="sm" variant="outline" onClick={() => onComplete(mine ? { price: mine.price, money: mine.money } : {})} title="Вписать фирму и телефон с АТИ и взять груз в работу под свою машину"><Plus />В работу</Button>}

@@ -200,3 +200,20 @@ def test_public_pay_terms_and_request():
     assert x["money"] == "на карту" and x["pay"] == "предоплата 50%, отсрочка 5 дн."
     assert pay_terms({"payOnUnload": True, "payDaysEnabled": True, "payDays": 5}) == "оплата на выгрузке"
     assert pay_terms({"prepay": 50, "payDays": 5}) == ""  # галочки сняты — условий нет
+
+
+
+def test_take_general_load_under_truck(make_client):
+    """Груз из общего поиска берётся под машину из сохранённой выдачи, а не из того, что прислал браузер."""
+    import json
+    from test_fleet import truck
+    tid = truck()
+    raw = {**load_raw(), "id": "take-1", "firm": {"id": "1", "name": "Фирма", "contacts": [{"id": 1, "name": "Анна"}]}}
+    main.kv_set("search_cache:test", json.dumps({"loads": [{"id": "take-1", "raw": raw}]}))
+    main.kv_set("search_cache_keys", ["search_cache:test"])
+    client = make_client("logist")
+    r = client.post("/api/loads/take", json={"load_id": "take-1", "truck_id": tid})
+    assert r.status_code == 200, r.text
+    assert r.json()["truck_id"] == tid and r.json()["raw"]["firm"]["name"] == "Фирма"
+    assert main.q("select truck_id from loads where id='take-1'")[0]["truck_id"] == tid
+    assert client.post("/api/loads/take", json={"load_id": "nope", "truck_id": tid}).status_code == 404

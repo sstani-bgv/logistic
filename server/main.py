@@ -1138,6 +1138,39 @@ async def add_manual_load(b: ManualLoad):
     return load_row(q("select * from loads where id=?", raw["id"])[0])
 
 
+class TakeLoad(BaseModel):
+    load_id: str = Field(min_length=1, max_length=64)
+    truck_id: int
+
+
+def cached_search_load(load_id):
+    """Груз из сохранённой выдачи общего поиска — с тем, что прислала биржа, а не браузер логиста."""
+    for key in reversed(kv_get("search_cache_keys", [])):
+        for load in json.loads(kv_get(key) or "{}").get("loads", []):
+            if load["id"] == load_id:
+                return load["raw"]
+    return None
+
+
+@app.post("/api/loads/take")
+async def take_load(b: TakeLoad):
+    """Груз из общего поиска — в работу под машину: дальше как с найденным под машину (поручить агенту и т.д.)."""
+    t = q("select * from trucks where id=?", b.truck_id)
+    if not t:
+        raise HTTPException(400, "Выберите машину")
+    raw = cached_search_load(b.load_id)
+    if not raw:
+        raise HTTPException(404, "Груза уже нет в выдаче — обновите грузы")
+    s, verdict, reasons, m = score(raw, t[0], q("select * from rules where active=1"), settings())
+    DB.execute("""insert into loads(id,truck_id,raw,score,verdict,reasons,metrics,first_seen,updated) values(?,?,?,?,?,?,?,?,?)
+        on conflict(id) do update set truck_id=excluded.truck_id, raw=excluded.raw, score=excluded.score,
+        verdict=excluded.verdict, reasons=excluded.reasons, metrics=excluded.metrics, updated=excluded.updated""",
+               (raw["id"], b.truck_id, json.dumps(raw, ensure_ascii=False), s, verdict,
+                json.dumps(reasons, ensure_ascii=False), json.dumps(m), time.time(), time.time()))
+    auth.record(DB, "load_take", raw["id"], f"под машину #{b.truck_id}")
+    return load_row(q("select * from loads where id=?", raw["id"])[0])
+
+
 class Reason(BaseModel):
     reason: str
     learn: bool = True

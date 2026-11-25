@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
+import { ChevronLeft, ChevronRight } from "lucide-react"
 import { api, errText, type Load } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -50,7 +51,7 @@ export default function SearchPanel({ settings = false, onResults, onDefaultMode
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  if (!profile) return <div role="status">{error || "Загружаем фильтры поиска…"}</div>
+  if (!profile) return <><div role="status" className={TOOLBAR}>{error || "Загружаем фильтры поиска…"}</div><div className={LIST_HEAD} /></>
   const set = (key: keyof Profile, value: string | number | boolean) => setProfile({ ...profile, [key]: value })
   const setRoute = (i: number, key: keyof Route, value: string | number) =>
     setProfile({ ...profile, routes: profile.routes.map((r, j) => j === i ? { ...r, [key]: value } : r) })
@@ -64,10 +65,15 @@ export default function SearchPanel({ settings = false, onResults, onDefaultMode
     } catch (e) { setError(errText(e)) }
     finally { setBusy(false) }
   }
-  return <section className="rounded-xl border bg-card p-4">
+  // На «Грузах» карточка в свёрнутом виде — одна строка кнопок той же высоты, что инструменты режима «Под мои машины»;
+  // итог и листание — отдельной строкой над списком (TOOLBAR и LIST_HEAD — общие с Loads.tsx).
+  return <><section className={TOOLBAR}>
     {settings && <h2 className="mb-3 font-semibold">Общий поиск грузов</h2>}
-    {!settings && <Button type="button" variant="outline" className="mb-3" aria-expanded={expanded} aria-controls="advanced-search-filters" onClick={() => setExpanded(!expanded)}>Расширенный поиск</Button>}
     <form onSubmit={(e) => { e.preventDefault(); void search(profile, 1, true) }} className="flex flex-col gap-4">
+      {!settings && <div className="grid gap-2 sm:flex">
+        <Button type="button" variant="outline" aria-expanded={expanded} aria-controls="advanced-search-filters" onClick={() => setExpanded(!expanded)}>Расширенный поиск</Button>
+        <Button type="submit" disabled={busy}>{busy ? "Обновляем грузы…" : "Обновить грузы"}</Button>
+      </div>}
       <div id="advanced-search-filters" hidden={!expanded} className={expanded ? "grid gap-3 sm:grid-cols-2 xl:grid-cols-3" : "hidden"}>
         <fieldset className="flex flex-col gap-2 sm:col-span-2 xl:col-span-3">
           <legend className="mb-1 text-sm font-medium">Направления</legend>
@@ -93,14 +99,18 @@ export default function SearchPanel({ settings = false, onResults, onDefaultMode
         </div>}
       </div>
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-      <div className="flex flex-wrap items-center gap-3">
-        {settings ? <Button type="button" onClick={save} disabled={busy}>Сохранить фильтры</Button> : <>
-          <Button type="submit" disabled={busy}>{busy ? "Обновляем грузы…" : "Обновить грузы"}</Button>
-          {updated && <span className="text-sm text-muted-foreground">Обновлено {new Date(updated).toLocaleString("ru-RU")}</span>}
-          {total !== null && <span className="text-sm text-muted-foreground">Найдено {total.toLocaleString("ru-RU")} · страница {page}</span>}
-          {total !== null && <><Button type="button" variant="outline" disabled={busy || page <= 1} onClick={() => search(profile, page - 1)}>Назад</Button><Button type="button" variant="outline" disabled={busy || !more} onClick={() => search(profile, page + 1)}>Далее</Button></>}
-        </>}
-      </div>
+      {settings && <Button type="button" className="self-start" onClick={save} disabled={busy}>Сохранить фильтры</Button>}
     </form>
   </section>
+  {!settings && <div className={LIST_HEAD}>
+    {total === null ? <span>Задайте фильтры и нажмите «Обновить грузы».</span> : <>
+      {/* одна строка и на 375px — иначе при переключении режимов список уезжает */}
+      <span className="whitespace-nowrap" title={updated && `Обновлено ${new Date(updated).toLocaleString("ru-RU")}`}>Найдено {total.toLocaleString("ru-RU")} · стр. {page}{updated && ` · ${new Date(updated).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`}</span>
+      <span className="ml-auto flex gap-1"><Button type="button" size="icon" variant="outline" aria-label="Предыдущая страница" disabled={busy || page <= 1} onClick={() => search(profile, page - 1)}><ChevronLeft /></Button><Button type="button" size="icon" variant="outline" aria-label="Следующая страница" disabled={busy || !more} onClick={() => search(profile, page + 1)}><ChevronRight /></Button></span>
+    </>}
+  </div>}
+  </>
 }
+
+export const TOOLBAR = "rounded-xl border bg-card p-4"
+export const LIST_HEAD = "flex min-h-8 flex-wrap items-center gap-2 text-sm text-muted-foreground"

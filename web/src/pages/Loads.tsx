@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { api, errText, usePoll, rub, ddmm, ago, atiLink, type Load, type Truck } from "@/lib/api"
 import { cn } from "@/lib/utils"
-import SearchPanel, { type Profile, type SearchResult } from "@/components/SearchPanel"
+import SearchPanel, { LIST_HEAD, TOOLBAR, type Profile, type SearchResult } from "@/components/SearchPanel"
 
 const VIEWS = [
   { id: "relevant", label: "Подходят" },
@@ -47,23 +47,10 @@ export default function LoadsPage() {
 
   return (
     <div className="flex flex-col gap-5">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Грузы с биржи АТИ</h1>
-          <p className="text-sm text-muted-foreground">{mode === "general" ? "Настройте направление и кузов. Грузы на странице упорядочены по оценке ассистента." : "Ассистент сам смотрит биржу под каждую свободную машину и оставляет подходящие грузы."}</p>
-        </div>
-        {mode === "trucks" && <div className="flex flex-wrap gap-2">
-          <Select value={truck} onValueChange={setTruck}>
-            <SelectTrigger className="w-56 bg-card"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Все машины</SelectItem>
-              {trucks?.map((t) => <SelectItem key={t.id} value={String(t.id)}>{t.name} · {t.city_name}</SelectItem>)}
-            </SelectContent>
-          </Select>
-          <Tabs value={view} onValueChange={setView}>
-            <TabsList>{VIEWS.map((v) => <TabsTrigger key={v.id} value={v.id}>{v.label}</TabsTrigger>)}</TabsList>
-          </Tabs>
-        </div>}
+      {/* Шапка, переключатель и строка инструментов одинаковы в обоих режимах: при переключении список не прыгает */}
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Грузы с биржи АТИ</h1>
+        <p className="text-sm text-muted-foreground">Грузы упорядочены по оценке ассистента: в общем поиске — по вашим фильтрам, под машины — ассистент сам смотрит биржу под каждую свободную машину.</p>
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -72,11 +59,27 @@ export default function LoadsPage() {
         </Tabs>
         <Button variant="outline" onClick={() => setManual({})}><Plus />Добавить груз вручную</Button>
       </div>
-      <div className={mode === "general" ? "" : "hidden"}><SearchPanel onResults={setGeneral} onDefaultMode={setMode} /></div>
+
+      <div className={cn("flex flex-col gap-3", mode !== "general" && "hidden")}><SearchPanel onResults={setGeneral} onDefaultMode={setMode} /></div>
+      {mode === "trucks" && <div className="flex flex-col gap-3">
+        <div className={cn(TOOLBAR, "grid gap-2 sm:flex sm:flex-wrap")}>
+          <Select value={truck} onValueChange={setTruck}>
+            <SelectTrigger className="w-full bg-card sm:w-56"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Все машины</SelectItem>
+              {trucks?.map((t) => <SelectItem key={t.id} value={String(t.id)}>{t.name} · {t.city_name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Tabs value={view} onValueChange={setView}>
+            <TabsList className="w-full sm:w-auto">{VIEWS.map((v) => <TabsTrigger key={v.id} value={v.id}>{v.label}</TabsTrigger>)}</TabsList>
+          </Tabs>
+        </div>
+        <div className={LIST_HEAD}>{loads ? `Грузов: ${loads.length}` : "Загружаем…"}</div>
+      </div>}
       {mode === "general" && <>
         {general?.public_only && <p className="text-sm text-muted-foreground">АТИ не передаёт сюда ставки и заказчиков. Сумму смотрите кнопкой «АТИ» и впишите — ассистент посчитает выгоду.</p>}
-        {!general ? <div role="status" className="text-sm text-muted-foreground">Задайте фильтры и нажмите «Найти грузы».</div> : general.loads.length === 0 ? <p className="text-sm text-muted-foreground">По этим фильтрам грузов нет. Попробуйте увеличить радиус или выбрать другой кузов.</p> : general.loads.map((load) => <LoadCard key={load.id} l={load} view="all" general onReject={() => {}} onDelegate={() => delegateGeneral(load)} profile={general.profile}
-          onComplete={load.raw.firm?.contacts?.length ? undefined : (rate) => setManual({ ...fromLoad(load), ...rate })} />)}
+        {general && (general.loads.length === 0 ? <p className="text-sm text-muted-foreground">По этим фильтрам грузов нет. Попробуйте увеличить радиус или выбрать другой кузов.</p> : general.loads.map((load) => <LoadCard key={load.id} l={load} view="all" general onReject={() => {}} onDelegate={() => delegateGeneral(load)} profile={general.profile}
+          onComplete={load.raw.firm?.contacts?.length ? undefined : (rate) => setManual({ ...fromLoad(load), ...rate })} />))}
       </>}
 
       {mode === "trucks" && (!loads ? <Loader2 className="mx-auto size-6 animate-spin text-muted-foreground" /> :

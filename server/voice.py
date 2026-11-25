@@ -33,7 +33,7 @@ def cfg():
         "key": os.environ.get("YC_RT_API_KEY") or os.environ.get("YC_API_KEY", ""),
         "url": os.environ.get("YC_RT_URL") or f"wss://ai.api.cloud.yandex.net/v1/realtime/openai?model=gpt://{folder}/{model}",
         "ready": bool((os.environ.get("YC_RT_API_KEY") or os.environ.get("YC_API_KEY")) and (folder or os.environ.get("YC_RT_URL"))),
-        "voice": os.environ.get("YC_RT_VOICE") or ("sergey" if "tts-live" in model else "kirill"),
+        "voice": os.environ.get("YC_RT_VOICE") or ("vera" if "tts-live" in model else "kirill"),
         # пауза собеседника, после которой агент отвечает: по телефону люди говорят с паузами после запятых
         "silence_ms": int(os.environ.get("VOICE_SILENCE_MS", 1100)),
         "call_sec": int(os.environ.get("VOICE_CALL_SEC", 240)),

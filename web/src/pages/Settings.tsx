@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState, type ComponentProps } from "react"
 import SearchPanel from "@/components/SearchPanel"
 import { toast } from "sonner"
 import { CheckCircle2, Copy, Loader2, Phone, Plus, Save, Trash2, X } from "lucide-react"
@@ -25,7 +25,7 @@ const GROUPS: { title: string; fields: Field[] }[] = [
     { k: "auto_score", label: "С какой оценки берёт сам", type: "number" },
     { k: "auto_per_cycle", label: "Новых диалогов за проход", type: "number" },
     { k: "auto_daily", label: "Новых диалогов в день", type: "number" },
-    { k: "default_goal", label: "Сценарий по умолчанию", hint: "подставляется в окне «Поручить агенту»; {min_rate_km} заменится на «Минимум ₽/км чистыми»", type: "long" },
+    { k: "default_goal", label: "Сценарий по умолчанию", hint: "подставляется в окне «Поручить агенту»", type: "long" },
     { k: "goal_presets", label: "Готовые сценарии", hint: "кнопки в окне «Поручить агенту»: логист выбирает, что узнать", type: "list" },
   ] },
   { title: "Звонки", fields: [
@@ -75,12 +75,13 @@ export default function SettingsPage() {
                   {f.hint && <span className="text-xs text-muted-foreground">{f.hint}</span>}
                 </div>
               )
-              if (f.type === "list") return <ListField key={f.k} f={f} value={(s[f.k] as string[]) ?? []} onChange={(v) => set(f.k, v)} />
+              if (f.type === "list") return <ListField key={f.k} f={f} value={(s[f.k] as string[]) ?? []} onChange={(v) => set(f.k, v)} vars={s} />
               if (f.type === "long") return (
                 <div key={f.k} className="flex flex-col gap-1.5 sm:col-span-2">
                   <Label htmlFor={id}>{f.label}</Label>
                   {f.hint && <span className="text-xs text-muted-foreground">{f.hint}</span>}
-                  <Textarea id={id} rows={4} value={String(s[f.k] ?? "")} onChange={(e) => set(f.k, e.target.value)} />
+                  {f.k === "default_goal" ? <GoalText id={id} rows={4} value={String(s[f.k] ?? "")} onChange={(v) => set(f.k, v)} vars={s} />
+                    : <Textarea id={id} rows={4} value={String(s[f.k] ?? "")} onChange={(e) => set(f.k, e.target.value)} />}
                 </div>
               )
               return (
@@ -101,7 +102,29 @@ export default function SettingsPage() {
   )
 }
 
-function ListField({ f, value, onChange }: { f: Field; value: string[]; onChange: (v: string[]) => void }) {
+// Значения из настроек, которые можно вставить в сценарий кнопкой: агент получит число, а не шаблон.
+const GOAL_VARS = [{ token: "{min_rate_km}", k: "min_rate_km", label: "Минимум ₽/км" }]
+
+function GoalText({ value, onChange, vars, ...props }: { value: string; onChange: (v: string) => void; vars: Settings } & Omit<ComponentProps<"textarea">, "value" | "onChange">) {
+  const ref = useRef<HTMLTextAreaElement>(null)
+  const insert = (token: string) => {
+    const el = ref.current, a = el?.selectionStart ?? value.length, b = el?.selectionEnd ?? value.length
+    onChange(value.slice(0, a) + token + value.slice(b))
+    requestAnimationFrame(() => { el?.focus(); el?.setSelectionRange(a + token.length, a + token.length) })
+  }
+  const shown = GOAL_VARS.reduce((t, v) => t.split(v.token).join(String(vars[v.k] ?? "…")), value)
+  return (
+    <div className="flex w-full flex-col gap-1.5">
+      <Textarea ref={ref} value={value} onChange={(e) => onChange(e.target.value)} {...props} />
+      <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+        Вставить:{GOAL_VARS.map((v) => <Button key={v.token} type="button" size="sm" variant="outline" className="h-7 text-xs" onClick={() => insert(v.token)}><Plus />{v.label} ({String(vars[v.k] ?? "—")})</Button>)}
+      </div>
+      {shown !== value && <p className="text-xs text-muted-foreground">Агент получит: {shown}</p>}
+    </div>
+  )
+}
+
+function ListField({ f, value, onChange, vars }: { f: Field; value: string[]; onChange: (v: string[]) => void; vars: Settings }) {
   const put = (i: number, v: string) => onChange(value.map((x, j) => (j === i ? v : x)))
   return (
     <div className="flex flex-col gap-1.5 sm:col-span-2">
@@ -109,7 +132,7 @@ function ListField({ f, value, onChange }: { f: Field; value: string[]; onChange
       {f.hint && <span className="text-xs text-muted-foreground">{f.hint}</span>}
       {value.map((x, i) => (
         <div key={i} className="flex items-start gap-2">
-          <Textarea rows={2} aria-label={`${f.label} ${i + 1}`} value={x} onChange={(e) => put(i, e.target.value)} />
+          <GoalText rows={2} aria-label={`${f.label} ${i + 1}`} value={x} onChange={(v) => put(i, v)} vars={vars} />
           <Button size="icon" variant="ghost" className="size-8 shrink-0" aria-label={`Удалить сценарий ${i + 1}`}
             onClick={() => onChange(value.filter((_, j) => j !== i))}><X /></Button>
         </div>

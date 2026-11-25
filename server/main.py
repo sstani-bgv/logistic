@@ -1903,7 +1903,15 @@ async def check_search_proxy():
 @app.get("/api/search/cache")
 async def search_cache():
     saved = kv_get("search_last_result")
-    return json.loads(saved) if saved else None
+    if not saved:
+        return None
+    result = json.loads(saved)
+    # выдача могла сохраниться до списка направлений: профиль — в текущий формат, иначе фронт падает на routes
+    try:
+        result["profile"] = SearchProfile.model_validate(result.get("profile") or {}).model_dump()
+    except ValueError:
+        return None
+    return result
 
 
 async def refresh_general_if_due():

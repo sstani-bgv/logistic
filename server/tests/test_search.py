@@ -291,3 +291,14 @@ def test_truck_destination_saved_and_sent_to_ati(monkeypatch, make_client):
     assert bodies[-1]["filter"]["to"] == {"type": 5, "exact_only": True, "list_type": 0,  # как шлёт сайт АТИ
                                           "list_id": "6f5e4ef8-e210-e311-b4ec-00259038ec34"}
     assert bodies[-1]["items_per_page"] == 10
+
+
+def test_cached_result_from_old_version_gets_routes(make_client):
+    """Выдача, сохранённая до списка направлений, отдаётся с профилем нового формата — иначе белый экран."""
+    import json
+    old = {"loads": [], "total": 0, "page": 1, "public_only": False,
+           "profile": {"city_name": "Санкт-Петербург", "to_city_name": "", "radius": 150, "body_mask": 1,
+                       "capacity": 20, "height": 2.7, "default_mode": "general"}}
+    main.kv_set("search_last_result", json.dumps(old))
+    profile = make_client("logist").get("/api/search/cache").json()["profile"]
+    assert profile["routes"][0]["from_city"] == "Санкт-Петербург" and profile["routes"][0]["from_radius"] == 150

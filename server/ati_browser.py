@@ -102,6 +102,9 @@ class ATIWebSession:
         async with self.lock:
             try:
                 yield
+            except ATIWebAuthRequired as error:  # обычное «не вошли» у автопоиска — снимок входа не затираем
+                print(f"[ati] {error} · {self._page.url if self._page else '-'}", flush=True)
+                raise
             except ATIWebError as error:
                 print(f"[ati] {error} · {self._page.url if self._page else '-'}", flush=True)
                 if self._page:
@@ -214,6 +217,10 @@ class ATIWebSession:
             if "id.ati.su/login" not in page.url and await self._authorized(page, navigate=True):
                 return await self._connected()
             await self._snapshot(page)
+            # что АТИ написал на странице входа («Неверный логин или пароль» и т.п.) — в лог, без полей формы
+            hint = next((line.strip() for line in body.splitlines() if any(w in line for w in ("невер", "ошиб", "заблок", "попыт", "не найден"))), "")
+            if hint:
+                print(f"[ati] АТИ пишет: {hint[:200]}", flush=True)
             return self._status("login_failed", page)
 
     def _status(self, state: str, page: Page) -> dict[str, Any]:

@@ -5,12 +5,15 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 
+// Направление как строка «Откуда → Куда» в фильтре АТИ: у каждого города свой радиус, «куда» пусто — любое
+export type Route = { from_city: string; from_radius: number; to_city: string; to_radius: number }
+const NEW_ROUTE: Route = { from_city: "", from_radius: 150, to_city: "", to_radius: 150 }
 export type Profile = {
-  city_name: string; to_city_name: string; radius: number; body_mask: number
+  routes: Route[]; body_mask: number
   capacity: number; height: number; default_mode: "general" | "trucks"
   auto_refresh: boolean; refresh_hours: number
 }
-export type SearchResult = { loads: Load[]; total: number; page: number; public_only: boolean; profile: Profile; updated_at?: string }
+export type SearchResult = { loads: Load[]; total: number; page: number; more?: boolean; public_only: boolean; profile: Profile; updated_at?: string }
 
 export default function SearchPanel({ settings = false, onResults, onDefaultMode }: {
   settings?: boolean
@@ -21,11 +24,12 @@ export default function SearchPanel({ settings = false, onResults, onDefaultMode
   const [busy, setBusy] = useState(false)
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState<number | null>(null)
+  const [more, setMore] = useState(false)
   const [error, setError] = useState("")
   const [expanded, setExpanded] = useState(settings)
   const [updated, setUpdated] = useState<string>()
 
-  const show = (result: SearchResult) => { setPage(result.page); setTotal(result.total); setUpdated(result.updated_at); onResults?.(result) }
+  const show = (result: SearchResult) => { setPage(result.page); setTotal(result.total); setMore(!!result.more); setUpdated(result.updated_at); onResults?.(result) }
   // Выдача кэшируется на сервере: листание и повторный поиск берут кэш, «Обновить грузы» идёт на биржу заново.
   async function search(value: Profile, nextPage = 1, refresh = false) {
     setBusy(true); setError("")
@@ -48,6 +52,10 @@ export default function SearchPanel({ settings = false, onResults, onDefaultMode
 
   if (!profile) return <div role="status">{error || "Загружаем фильтры поиска…"}</div>
   const set = (key: keyof Profile, value: string | number | boolean) => setProfile({ ...profile, [key]: value })
+  const setRoute = (i: number, key: keyof Route, value: string | number) =>
+    setProfile({ ...profile, routes: profile.routes.map((r, j) => j === i ? { ...r, [key]: value } : r) })
+  const radius = (id: string, label: string, value: number, onChange: (v: number) => void) =>
+    <div className="grid gap-1.5"><Label htmlFor={id}>{label}</Label><Input id={id} className="w-24" type="number" min={10} max={999} required value={value} onChange={(e) => onChange(Number(e.target.value))} /></div>
   const save = async () => {
     setBusy(true); setError("")
     try {
@@ -61,9 +69,18 @@ export default function SearchPanel({ settings = false, onResults, onDefaultMode
     {!settings && <Button type="button" variant="outline" className="mb-3" aria-expanded={expanded} aria-controls="advanced-search-filters" onClick={() => setExpanded(!expanded)}>Расширенный поиск</Button>}
     <form onSubmit={(e) => { e.preventDefault(); void search(profile, 1, true) }} className="flex flex-col gap-4">
       <div id="advanced-search-filters" hidden={!expanded} className={expanded ? "grid gap-3 sm:grid-cols-2 xl:grid-cols-3" : "hidden"}>
-        <div className="grid gap-1.5"><Label htmlFor="search-from">Откуда</Label><Input id="search-from" required value={profile.city_name} onChange={(e) => set("city_name", e.target.value)} /></div>
-        <div className="grid gap-1.5"><Label htmlFor="search-to">Куда</Label><Input id="search-to" placeholder="Любое направление" value={profile.to_city_name} onChange={(e) => set("to_city_name", e.target.value)} /></div>
-        <div className="grid gap-1.5"><Label htmlFor="search-radius">Радиус, км</Label><Input id="search-radius" type="number" min={10} max={2000} required value={profile.radius} onChange={(e) => set("radius", Number(e.target.value))} /></div>
+        <fieldset className="flex flex-col gap-2 sm:col-span-2 xl:col-span-3">
+          <legend className="mb-1 text-sm font-medium">Направления</legend>
+          {profile.routes.map((r, i) => <div key={i} className="flex flex-wrap items-end gap-2 rounded-lg bg-muted/40 p-2">
+            <div className="grid min-w-40 flex-1 gap-1.5"><Label htmlFor={`from-${i}`}>Откуда</Label><Input id={`from-${i}`} required value={r.from_city} onChange={(e) => setRoute(i, "from_city", e.target.value)} /></div>
+            {radius(`from-r-${i}`, "Радиус, км", r.from_radius, (v) => setRoute(i, "from_radius", v))}
+            <span className="pb-2 text-muted-foreground" aria-hidden>→</span>
+            <div className="grid min-w-40 flex-1 gap-1.5"><Label htmlFor={`to-${i}`}>Куда</Label><Input id={`to-${i}`} placeholder="Любое направление" value={r.to_city} onChange={(e) => setRoute(i, "to_city", e.target.value)} /></div>
+            {radius(`to-r-${i}`, "Радиус, км", r.to_radius, (v) => setRoute(i, "to_radius", v))}
+            {profile.routes.length > 1 && <Button type="button" variant="ghost" aria-label={`Убрать направление ${i + 1}`} onClick={() => setProfile({ ...profile, routes: profile.routes.filter((_, j) => j !== i) })}>Убрать</Button>}
+          </div>)}
+          {profile.routes.length < 10 && <Button type="button" variant="outline" className="self-start" onClick={() => setProfile({ ...profile, routes: [...profile.routes, { ...NEW_ROUTE }] })}>+ Направление</Button>}
+        </fieldset>
         <div className="grid gap-1.5"><Label htmlFor="search-body">Кузов</Label><select id="search-body" className="h-9 rounded-md border bg-background px-3 text-sm" value={profile.body_mask} onChange={(e) => set("body_mask", Number(e.target.value))}>
           <option value={0}>Любой</option><option value={1}>Тент</option><option value={2}>Бортовой</option><option value={4}>Рефрижератор</option><option value={8}>Изотерм</option>
         </select></div>
@@ -81,7 +98,7 @@ export default function SearchPanel({ settings = false, onResults, onDefaultMode
           <Button type="submit" disabled={busy}>{busy ? "Обновляем грузы…" : "Обновить грузы"}</Button>
           {updated && <span className="text-sm text-muted-foreground">Обновлено {new Date(updated).toLocaleString("ru-RU")}</span>}
           {total !== null && <span className="text-sm text-muted-foreground">Найдено {total.toLocaleString("ru-RU")} · страница {page}</span>}
-          {total !== null && <><Button type="button" variant="outline" disabled={busy || page <= 1} onClick={() => search(profile, page - 1)}>Назад</Button><Button type="button" variant="outline" disabled={busy || page * 10 >= total || page >= 100} onClick={() => search(profile, page + 1)}>Далее</Button></>}
+          {total !== null && <><Button type="button" variant="outline" disabled={busy || page <= 1} onClick={() => search(profile, page - 1)}>Назад</Button><Button type="button" variant="outline" disabled={busy || !more} onClick={() => search(profile, page + 1)}>Далее</Button></>}
         </>}
       </div>
     </form>

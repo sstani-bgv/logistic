@@ -7,9 +7,10 @@ import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { api, num, usePoll, ddmm, errText, type Truck } from "@/lib/api"
+import { api, num, usePoll, ddmm, errText, DISTRICTS, type Truck } from "@/lib/api"
 
-const EMPTY = { id: 0, name: "", driver: "", city_name: "", radius: 150, body_mask: 1, body_name: "тент", height: 2.7, capacity: 20, free_from: new Date().toISOString().slice(0, 10), active: 1, relevant: 0, status: "free" as const }
+const EMPTY = { id: 0, name: "", driver: "", city_name: "", radius: 150, body_mask: 1, body_name: "тент", height: 2.7, capacity: 20, free_from: new Date().toISOString().slice(0, 10), active: 1, relevant: 0, status: "free" as const, to_city_name: "", to_radius: 150, to_district: "" }
+const where = (t: Truck) => t.to_district ? t.to_district : t.to_city_name ? `${t.to_city_name} ±${t.to_radius ?? 150}` : "вся Россия"
 
 export default function TrucksPage() {
   const { data, reload } = usePoll<Truck[]>("/trucks", 8000)
@@ -68,10 +69,11 @@ export default function TrucksPage() {
               <Label htmlFor={`free-${t.id}`} className="text-sm">Свободна</Label>
               {t.status === "busy" && <span className="text-xs text-muted-foreground">занята до {ddmm(t.free_from)}</span>}
             </div>
-            <div className="grid grid-cols-3 gap-2 rounded-lg bg-muted/50 p-3 text-sm">
+            <div className="grid grid-cols-2 gap-2 rounded-lg bg-muted/50 p-3 text-sm sm:grid-cols-4">
               <div><div className="text-xs text-muted-foreground">{t.status === "busy" ? "Освободится в" : "Свободна в"}</div><div className="font-medium">{t.city_name}</div></div>
               <div><div className="text-xs text-muted-foreground">С даты</div><div className="font-medium">{t.free_from && t.free_from > new Date().toLocaleDateString("sv-SE") ? ddmm(t.free_from) : "сейчас"}</div></div>
               <div><div className="text-xs text-muted-foreground">Радиус</div><div className="num font-medium">{t.radius} км</div></div>
+              <div><div className="text-xs text-muted-foreground">Куда</div><div className="font-medium">{where(t)}</div></div>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-sm"><span className="num font-semibold text-primary">{t.relevant}</span> <span className="text-muted-foreground">подходящих грузов</span></span>
@@ -91,16 +93,22 @@ export default function TrucksPage() {
 function TruckDialog({ t, onClose, onDone }: { t: Truck | null; onClose: () => void; onDone: () => void }) {
   const [f, setF] = useState<Truck | null>(null)
   const [busy, setBusy] = useState(false)
+  const [dest, setDest] = useState<"any" | "city" | "district" | null>(null)  // выбор «куда», пока не сохранили
   const cur = f?.id === t?.id && f ? f : t
+  const mode = dest ?? (cur?.to_district ? "district" : cur?.to_city_name ? "city" : "any")
+  const close = () => { setF(null); setDest(null); onClose() }
   const set = (k: keyof Truck, v: string | number | null) => setF({ ...(cur as Truck), [k]: v })
   const bad = !cur || !String(cur.name ?? "").trim() || !String(cur.city_name ?? "").trim() || !cur.free_from ||
-    [cur.radius, cur.height, cur.capacity].some((x) => x === null || x === undefined || !(Number(x) > 0))
+    [cur.radius, cur.height, cur.capacity].some((x) => x === null || x === undefined || !(Number(x) > 0)) ||
+    [cur.radius, cur.to_radius ?? 150].some((x) => Number(x) > 999) ||
+    (mode === "city" && (!String(cur.to_city_name ?? "").trim() || !(Number(cur.to_radius) > 0)))
   const save = async () => {
     if (!cur || busy || bad) return
     setBusy(true)
     try {
-      await api(cur.id ? `/trucks/${cur.id}` : "/trucks", { method: cur.id ? "PUT" : "POST", body: { ...cur, active: !!cur.active } })
-      toast.success("Сохранено — оценки грузов пересчитаны"); setF(null); onClose(); onDone()
+      const to = { to_city_name: mode === "city" ? cur.to_city_name ?? "" : "", to_district: mode === "district" ? cur.to_district || "ЦФО" : "", to_radius: cur.to_radius ?? 150 }
+      await api(cur.id ? `/trucks/${cur.id}` : "/trucks", { method: cur.id ? "PUT" : "POST", body: { ...cur, ...to, active: !!cur.active } })
+      toast.success("Сохранено — оценки грузов пересчитаны"); close(); onDone()
     } catch (e) { toast.error(errText(e)) } finally { setBusy(false) }
   }
   const field = (k: keyof Truck, label: string, type = "text") => (
@@ -110,17 +118,34 @@ function TruckDialog({ t, onClose, onDone }: { t: Truck | null; onClose: () => v
     </div>
   )
   return (
-    <Dialog open={!!t} onOpenChange={(o) => { if (!o) { setF(null); onClose() } }}>
+    <Dialog open={!!t} onOpenChange={(o) => { if (!o) close() }}>
       <DialogContent>
         <DialogHeader><DialogTitle>{cur?.id ? "Машина" : "Новая машина"}</DialogTitle></DialogHeader>
         <div className="grid grid-cols-2 gap-3">
           {field("name", "Машина и госномер")}{field("driver", "Водитель")}
           {field("city_name", "Где освобождается")}{field("free_from", "С какой даты (в будущем — занята)", "date")}
-          {field("radius", "Радиус поиска, км", "number")}{field("height", "Высота кузова, м", "number")}
+          {field("radius", "Радиус поиска, км (до 999)", "number")}{field("height", "Высота кузова, м", "number")}
           {field("capacity", "Грузоподъёмность, т", "number")}{field("body_name", "Кузов")}
         </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="t-dest">Куда нужно машине</Label>
+            <select id="t-dest" className="h-9 rounded-md border bg-background px-3 text-sm" value={mode} onChange={(e) => {
+              const m = e.target.value as typeof mode
+              setDest(m); if (m === "district" && !cur?.to_district) set("to_district", "ЦФО")
+            }}>
+              <option value="any">Вся Россия — любое направление</option><option value="city">В город</option><option value="district">В федеральный округ</option>
+            </select>
+          </div>
+          {mode === "district" && <div className="flex flex-col gap-1.5"><Label htmlFor="t-district">Округ</Label>
+            <select id="t-district" className="h-9 rounded-md border bg-background px-3 text-sm" value={cur?.to_district || "ЦФО"} onChange={(e) => set("to_district", e.target.value)}>
+              {Object.entries(DISTRICTS).map(([k, v]) => <option key={k} value={k}>{k} — {v}</option>)}
+            </select></div>}
+          {mode === "city" && field("to_city_name", "Город выгрузки")}
+          {mode === "city" && field("to_radius", "Радиус вокруг него, км", "number")}
+        </div>
         <div className="flex items-center gap-2"><Switch id="t-active" checked={!!cur?.active} onCheckedChange={(v) => set("active", v ? 1 : 0)} /><Label htmlFor="t-active">Искать грузы</Label></div>
-        <DialogFooter><Button variant="outline" onClick={onClose}>Отмена</Button><Button onClick={save} disabled={busy || bad}>{busy && <Loader2 className="animate-spin" />}Сохранить</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={close}>Отмена</Button><Button onClick={save} disabled={busy || bad}>{busy && <Loader2 className="animate-spin" />}Сохранить</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   )

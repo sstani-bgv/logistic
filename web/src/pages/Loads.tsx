@@ -257,7 +257,7 @@ function RateForm({ load, profile, onRated }: { load: Load; profile: Profile; on
   const submit = async () => {
     setBusy(true)
     try {
-      onRated({ id: load.id, price: Number(price), money, res: await api("/search/rate", { body: { load: load.raw, profile, price: Number(price), money } }) })
+      onRated({ id: load.id, price: Number(price), money, res: await api("/search/rate", { body: { load: load.raw, profile, route: load.route ?? 0, price: Number(price), money } }) })
     } catch (e) { toast.error(errText(e)) } finally { setBusy(false) }
   }
   return (

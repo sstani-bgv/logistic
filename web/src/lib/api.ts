@@ -20,10 +20,17 @@ export type Raw = {
 export type Load = {
   id: string; truck_id: number; score: number; verdict: string; status: string; reject_reason?: string
   first_seen: number; reasons: Reason[]; metrics: Metrics; raw: Raw
+  route?: number  // какое направление общего поиска нашло груз
 }
 export type Truck = {
   id: number; name: string; driver: string; city_name: string; radius: number; body_mask: number; body_name: string
   height: number; capacity: number; free_from: string; active: number; relevant: number; status: "free" | "busy"
+  to_city_name: string | null; to_radius: number | null; to_district: string | null
+}
+// Федеральные округа — как в scoring.DISTRICTS на сервере
+export const DISTRICTS: Record<string, string> = {
+  "ЦФО": "Центральный", "СЗФО": "Северо-Западный", "ЮФО": "Южный", "СКФО": "Северо-Кавказский",
+  "ПФО": "Приволжский", "УФО": "Уральский", "СФО": "Сибирский", "ДФО": "Дальневосточный",
 }
 export type Msg = { id: string; mine: number; text: string; ts: number; kind?: "text" | "call" }
 export type Call = {

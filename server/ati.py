@@ -18,11 +18,11 @@ search_response_bytes = ContextVar("search_response_bytes", default=0)
 
 async def search(truck, page):
     body = {"page": page, "items_per_page": 10, "exclude_geo_dicts": True,
-            "filter": {"from": {"id": truck["city_id"], "type": 2, "radius": truck["radius"]},
+            "filter": {"from": {"id": truck["city_id"], "type": 2, "radius": min(truck["radius"], 999)},
                        "dates": {"date_option": "today-plus"}, "truck_type": truck["body_mask"],
                        "sorting_type": 2, "extra_params": 0}}
-    if truck.get("to_city_id"):
-        body["filter"]["to"] = {"id": truck["to_city_id"], "type": 2, "radius": 150}
+    if truck.get("to_city_id") and not truck.get("to_district"):  # округ отсекаем сами (scoring.district)
+        body["filter"]["to"] = {"id": truck["to_city_id"], "type": 2, "radius": min(truck.get("to_radius") or 150, 999)}
     if not truck["body_mask"]:
         body["filter"].pop("truck_type")
     if truck.get("capacity"):

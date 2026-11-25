@@ -39,3 +39,22 @@ def test_free_date_in_past_means_free_today():
     old_truck = {**TRUCK, "free_from": (date.today() - timedelta(days=9)).isoformat()}
     res = scoring.score(l, old_truck, [], dict(main.DEFAULTS))
     assert not any("позже чем через 3 дня" in r["t"] for r in res[2])  # погрузка завтра, машина свободна сейчас
+
+
+def test_destination_city_and_district_cut_other_directions():
+    """Машине нужно в Москву (или в ЦФО): выгрузка в другом месте — отсекаем, в нужном — небольшой плюс."""
+    from scoring import district, score
+    from test_fleet import load_raw
+    st = {"vat": 22, "min_rate_km": 55, "threshold": 0}
+    truck = {"lat": 59.94, "lon": 30.32, "radius": 150, "body_mask": 1, "capacity": 20, "height": 2.7,
+             "free_from": "2000-01-01", "rate": None}
+    load = {**load_raw(), "rate": {"price": 90000, "moneyType": 23}}  # выгрузка в Москве
+    base = score(load, truck, [], st)[0]
+    to_msk = score(load, {**truck, "to_lat": 55.75, "to_lon": 37.62, "to_radius": 100, "to_city_name": "Москва"}, [], st)
+    to_spb = score(load, {**truck, "to_lat": 59.94, "to_lon": 30.32, "to_radius": 100, "to_city_name": "СПб"}, [], st)
+    assert to_msk[1] == "relevant" and to_msk[0] > base and to_spb[1] == "filtered"
+    assert score(load, {**truck, "to_district": "ЦФО"}, [], st)[1] == "relevant"
+    assert score(load, {**truck, "to_district": "СЗФО"}, [], st)[1] == "filtered"
+    assert district({"region": "Московская обл."}) == "ЦФО" and district({"region": "Ямало-Ненецкий АО"}) == "УФО"
+    assert district({"region": "Нижегородская обл."}) == "ПФО" and district({"city": "Санкт-Петербург"}) == "СЗФО"
+    assert district({"region": "Минская обл."}) is None

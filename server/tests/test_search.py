@@ -14,13 +14,16 @@ def test_general_search_without_fleet_uses_filters_and_returns_real_shape(monkey
     async def city(name):
         return {"CityId": 1 if name == "СПб" else 3611, "Latitude": 59.94, "Longitude": 30.32}
 
+    pages = []
+
     async def search(profile, page):
         assert profile["city_id"] == 1 and profile["to_city_id"] == 3611
         assert profile["body_mask"] == 0 and profile["capacity"] == 12
-        assert page == 2
+        pages.append(page)
         return [{**load_raw(), "publicOnly": True}], 123
 
     monkeypatch.setattr(main, "city", city)
+    monkeypatch.setattr(main, "PAGE_PAUSE", 0)
     monkeypatch.setattr(main.ati, "search", search)
     client = make_client("logist")
     response = client.post("/api/search", json={"city_name": "СПб", "to_city_name": "Москва",
@@ -28,7 +31,8 @@ def test_general_search_without_fleet_uses_filters_and_returns_real_shape(monkey
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["total"] == 123 and result["public_only"] is True
-    assert result["loads"][0]["id"] == "L1"
+    assert result["loads"][0]["id"] == "L1" and len(result["loads"]) == 1  # один груз на трёх страницах — один раз
+    assert pages == [4, 5, 6] and result["more"]  # вторая страница поиска = страницы АТИ 4–6
     assert main.q("select count(*) n from trucks")[0]["n"] == 0
 
 
@@ -38,7 +42,7 @@ def test_saved_search_profile_requires_owner_and_survives_read(make_client):
     assert make_client("logist").put("/api/search/profile", json=profile).status_code == 403
     assert owner.put("/api/search/profile", json=profile).status_code == 200
     result = owner.get("/api/search/profile").json()
-    assert result["city_name"] == "Казань" and result["default_mode"] == "trucks"
+    assert result["routes"][0]["from_city"] == "Казань" and result["default_mode"] == "trucks"
 
 
 def test_search_cache_avoids_requests_and_survives_failed_refresh(monkeypatch, make_client):
@@ -134,12 +138,12 @@ def test_cache_keeps_last_hundred_searches(monkeypatch, make_client):
     monkeypatch.setattr(main, "fetch_general_search", fetch)
     client = make_client("logist")
     for radius in range(100, 202):
-        assert client.post("/api/search", json={"radius": radius, "refresh": True}).status_code == 200
+        assert client.post("/api/search", json={"routes": [{"from_radius": radius}], "refresh": True}).status_code == 200
     keys = main.kv_get("search_cache_keys")
     assert len(keys) == 100
     assert len(main.q("select k from kv where k like 'search_cache:%'")) == 100
     latest = client.get("/api/search/cache").json()
-    assert latest["profile"]["radius"] == 201
+    assert latest["profile"]["routes"][0]["from_radius"] == 201
 
 
 def test_general_search_exposes_provider_failure(monkeypatch, make_client):
@@ -217,3 +221,71 @@ def test_take_general_load_under_truck(make_client):
     assert r.json()["truck_id"] == tid and r.json()["raw"]["firm"]["name"] == "Фирма"
     assert main.q("select truck_id from loads where id='take-1'")[0]["truck_id"] == tid
     assert client.post("/api/loads/take", json={"load_id": "nope", "truck_id": tid}).status_code == 404
+
+
+def test_several_routes_each_with_own_radius(monkeypatch, make_client):
+    """Несколько направлений «откуда → куда», как в АТИ: у каждого свой радиус; без «куда» — любое направление."""
+    coords = {"СПб": (1, 59.94, 30.32), "Москва": (3611, 55.75, 37.62), "Казань": (80, 55.78, 49.12)}
+
+    async def city(name):
+        cid, lat, lon = coords[name]
+        return {"CityId": cid, "CityName": name, "Latitude": lat, "Longitude": lon}
+
+    got = []
+
+    async def search(profile, page):
+        got.append((profile["city_id"], profile["radius"], profile["to_city_id"], profile["to_radius"]))
+        return [{**load_raw(), "id": f"L{profile['city_id']}"}], 1
+
+    monkeypatch.setattr(main, "city", city)
+    monkeypatch.setattr(main.ati, "search", search)
+    routes = [{"from_city": "СПб", "from_radius": 999, "to_city": "Москва", "to_radius": 50},
+              {"from_city": "Казань", "from_radius": 300}]
+    r = make_client("logist").post("/api/search", json={"routes": routes, "refresh": True})
+    assert r.status_code == 200, r.text
+    assert got == [(1, 999, 3611, 50), (80, 300, None, 150)]
+    assert {l["id"]: l["route"] for l in r.json()["loads"]} == {"L1": 0, "L80": 1}
+    over = make_client("logist").post("/api/search", json={"routes": [{"from_radius": 1000}]})
+    assert over.status_code == 422  # АТИ больше 999 км не принимает
+
+
+def test_old_saved_profile_becomes_one_route():
+    p = main.SearchProfile.model_validate({"city_name": "Казань", "to_city_name": "Москва", "radius": 2000})
+    assert p.routes[0].model_dump() == {"from_city": "Казань", "from_radius": 999, "to_city": "Москва", "to_radius": 150}
+
+
+def test_truck_destination_saved_and_sent_to_ati(monkeypatch, make_client):
+    """Карточка машины: «куда» — город (в фильтр АТИ с радиусом), округ (режем сами) или вся Россия."""
+    import asyncio
+    coords = {"Тверь": (251, 56.86, 35.92), "Санкт-Петербург": (1, 59.94, 30.32)}
+
+    async def city(name):
+        cid, lat, lon = coords[name]
+        return {"CityId": cid, "CityName": name, "Latitude": lat, "Longitude": lon}
+
+    bodies = []
+
+    async def post(url, json):
+        bodies.append(json)
+        raise main.httpx.ConnectError("stop")
+
+    monkeypatch.setattr(main, "city", city)
+    monkeypatch.setattr(main.ati.client, "post", post)
+    monkeypatch.setattr(main.ati, "browser_config", None)
+    owner = make_client("owner")
+    truck = {"name": "T", "city_name": "Тверь", "free_from": "2026-11-25", "radius": 999,
+             "to_city_name": "Санкт-Петербург", "to_radius": 100}
+    assert owner.post("/api/trucks", json={**truck, "radius": 1000}).status_code == 422
+    assert owner.post("/api/trucks", json={**truck, "to_district": "XX"}).status_code == 422
+    assert owner.post("/api/trucks", json=truck).status_code == 200
+    t = main.q("select * from trucks")[0]
+    assert (t["to_city_id"], t["to_lat"], t["to_radius"], t["to_district"]) == (1, 59.94, 100, None)
+    with pytest.raises(main.httpx.ConnectError):
+        asyncio.run(main.ati.search(t, 1))
+    assert bodies[-1]["filter"]["to"] == {"id": 1, "type": 2, "radius": 100}
+    assert owner.put(f"/api/trucks/{t['id']}", json={**truck, "to_district": "СЗФО"}).status_code == 200
+    t = main.q("select * from trucks")[0]
+    assert (t["to_city_name"], t["to_city_id"], t["to_district"]) == ("", None, "СЗФО")
+    with pytest.raises(main.httpx.ConnectError):
+        asyncio.run(main.ati.search(t, 1))
+    assert "to" not in bodies[-1]["filter"]  # округ АТИ не передаём — отсекает оценка

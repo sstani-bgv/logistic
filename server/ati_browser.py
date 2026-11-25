@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from camoufox.async_api import AsyncNewBrowser
+from camoufox.utils import launch_options
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 
 
@@ -38,6 +39,30 @@ class ATIWebVerificationRequired(ATIWebError):
 
 def _state_path() -> Path:
     return Path(os.environ.get("DATA_DIR", "/data")) / "ati-browser-state.json"
+
+
+def _launch_options(launch: dict[str, Any]) -> dict[str, Any]:
+    """Параметры запуска Camoufox с одним и тем же отпечатком устройства между перезапусками.
+
+    Camoufox на каждом запуске придумывает новый отпечаток — для АТИ это новое устройство и новый код из SMS
+    после каждого деплоя. Отпечаток (CAMOU_* и настройки Firefox) создаётся один раз и лежит в DATA_DIR;
+    остальное (путь к браузеру, прокси) — свежее. Окружение целиком не сохраняем: в нём ключи API.
+    """
+    options = launch_options(**launch)
+    path = _state_path().with_name("ati-browser-fingerprint.json")
+    try:
+        saved = json.loads(path.read_text())
+    except (OSError, ValueError):
+        saved = None
+    if saved:
+        options["env"] = {k: v for k, v in options["env"].items() if not k.startswith("CAMOU_")} | saved["env"]
+        options["firefox_user_prefs"] = saved["firefox_user_prefs"]
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"env": {k: v for k, v in options["env"].items() if k.startswith("CAMOU_")},
+                                    "firefox_user_prefs": options["firefox_user_prefs"]}))
+        path.chmod(0o600)
+    return options
 
 
 def _proxy(config: dict[str, Any]) -> dict[str, str] | None:
@@ -97,10 +122,13 @@ class ATIWebSession:
         self._playwright = await async_playwright().start()
         # Camoufox — Firefox с подменой отпечатка: headless Chromium АТИ распознаёт как робота.
         # Размер окна и прочий отпечаток задаёт сам Camoufox, свой viewport не ставим — иначе отпечаток не сходится.
-        launch: dict[str, Any] = {"headless": True, "os": "linux", "locale": "ru-RU"}  # ОС как у сервера: иначе Camoufox шумит canvas, это заметно
+        # os — как у сервера: иначе Camoufox шумит canvas, это заметно.
+        # main_world_eval: Camoufox выполняет скрипты в изолированном мире — без window.atiUser и без cookies входа в fetch;
+        # скрипты с префиксом "mw:" идут в мир самой страницы.
+        launch: dict[str, Any] = {"headless": True, "os": "linux", "locale": "ru-RU", "main_world_eval": True}
         if _proxy(config):
             launch["proxy"] = _proxy(config)
-        self._browser = await AsyncNewBrowser(self._playwright, **launch)
+        self._browser = await AsyncNewBrowser(self._playwright, from_options=_launch_options(launch))
         context: dict[str, Any] = {"service_workers": "block"}
         state = _state_path()
         if state.exists():
@@ -135,7 +163,7 @@ class ATIWebSession:
         if "loads.ati.su" not in page.url:
             return False
         try:
-            return bool(await page.evaluate("() => Boolean(window.atiUser && window.atiUser.is_user)"))
+            return bool(await page.evaluate("mw:Boolean(window.atiUser && window.atiUser.is_user)"))
         except Exception:
             return False
 
@@ -163,6 +191,8 @@ class ATIWebSession:
                 if not username or not password:
                     raise ATIWebAuthRequired("Укажите логин и пароль ATI")
                 await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+                with contextlib.suppress(Exception):  # форму входа АТИ рисует скриптом уже после загрузки страницы
+                    await page.wait_for_selector("input[type='password']", state="visible", timeout=30_000)
                 login = await self._first_visible(page, [
                     "input[autocomplete='username']", "input[name*='login' i]", "input[name='username']", "input[type='email']", "input[type='text']"
                 ])
@@ -215,20 +245,21 @@ class ATIWebSession:
 
     async def search(self, body: dict[str, Any], config: dict[str, Any]) -> tuple[list[dict], int, int]:
         async with self._locked():
+            if self.last_status.get("state") == "verification_required":
+                # браузер стоит на странице ввода кода — уйти с неё значит потерять код
+                raise ATIWebAuthRequired("ATI ждёт код подтверждения — введите его в Настройках → Аккаунт биржи ATI")
             page = await self._ensure(config)
             if not await self._authorized(page, navigate=True):
                 raise ATIWebAuthRequired("Сессия ATI не подключена. Откройте Настройки → ATI и выполните вход.")
+            # запрос из мира страницы — с её cookies входа; "mw:" не принимает аргументы, поэтому данные — JSON-литералами
             result = await page.evaluate(
-                """async ({url, body}) => {
-                    const response = await fetch(url, {
-                        method: 'POST', credentials: 'include',
-                        headers: {'content-type': 'application/json', 'accept': 'application/json'},
-                        body: JSON.stringify(body)
-                    });
-                    const text = await response.text();
-                    return {status: response.status, text};
-                }""",
-                {"url": SEARCH_URL, "body": body},
+                "mw:(async () => {"
+                f" const response = await fetch({json.dumps(SEARCH_URL)}, {{"
+                "  method: 'POST', credentials: 'include',"
+                "  headers: {'content-type': 'application/json', 'accept': 'application/json'},"
+                f"  body: {json.dumps(json.dumps(body))}}});"
+                " return {status: response.status, text: await response.text()};"
+                "})()"
             )
             if result["status"] in (401, 403):
                 self.last_status = {"connected": False, "state": "expired"}

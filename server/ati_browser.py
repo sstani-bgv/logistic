@@ -77,9 +77,15 @@ class ATIWebSession:
         async with self.lock:
             try:
                 yield
-            except ATIWebError:
+            except ATIWebError as error:
+                print(f"[ati] {error} · {self._page.url if self._page else '-'}", flush=True)
+                if self._page:
+                    await self._snapshot(self._page)
                 raise
             except Exception as error:
+                print(f"[ati] сбой браузера: {type(error).__name__}: {str(error)[:300]} · {self._page.url if self._page else '-'}", flush=True)
+                if self._page:
+                    await self._snapshot(self._page)
                 await self.close()
                 raise ATIWebError(f"ATI не ответил вовремя, попробуйте ещё раз ({type(error).__name__})") from error
 
@@ -169,23 +175,26 @@ class ATIWebSession:
                 await self._submit(secret, page)
 
             if await self._first_visible(page, CODE_FIELDS):
-                self.last_status = {"connected": False, "state": "verification_required"}
-                return self.last_status
+                await self._snapshot(page)
+                return self._status("verification_required", page)
             body = (await page.locator("body").inner_text())[:2_000].lower()
             if "captcha" in body or "капч" in body:
                 await self._snapshot(page)
-                self.last_status = {"connected": False, "state": "manual_required"}
-                return self.last_status
+                return self._status("manual_required", page)
             if "id.ati.su/login" not in page.url and await self._authorized(page, navigate=True):
                 return await self._connected()
             await self._snapshot(page)
-            self.last_status = {"connected": False, "state": "login_failed"}
-            return self.last_status
+            return self._status("login_failed", page)
+
+    def _status(self, state: str, page: Page) -> dict[str, Any]:
+        print(f"[ati] вход: {state} · {page.url}", flush=True)
+        self.last_status = {"connected": state == "connected", "state": state}
+        return self.last_status
 
     async def _connected(self) -> dict[str, Any]:
         await self._save_state()
-        self.last_status = {"connected": True, "state": "connected"}
-        return self.last_status
+        assert self._page
+        return self._status("connected", self._page)
 
     @staticmethod
     async def _submit(field, page: Page) -> None:

@@ -21,6 +21,7 @@ LOGIN_URL = "https://id.ati.su/login/"
 LOADS_URL = "https://loads.ati.su/"
 SEARCH_URL = "https://loads.ati.su/webapi/v1.0/loads/search"
 BLOCKED_TYPES = {"image", "media", "font"}
+CODE_FIELDS = ["input[autocomplete='one-time-code']", "input[name*='code' i]", "input[inputmode='numeric']"]
 
 
 class ATIWebError(RuntimeError):
@@ -144,52 +145,64 @@ class ATIWebSession:
         async with self._locked():
             page = await self._ensure(config)
             if code:
-                field = await self._first_visible(page, [
-                    "input[autocomplete='one-time-code']", "input[name*='code' i]", "input[inputmode='numeric']"
-                ])
+                field = await self._first_visible(page, CODE_FIELDS)
                 if not field:
-                    raise ATIWebError("Форма кода подтверждения ATI не найдена")
+                    raise ATIWebError("Форма кода подтверждения ATI не найдена — нажмите «Войти и проверить» ещё раз")
                 await field.fill(code)
-                button = page.get_by_role("button", name="Продолжить").or_(
-                    page.get_by_role("button", name="Войти")
-                ).first
-                await button.click()
-                await page.wait_for_timeout(1_000)
-            elif not await self._authorized(page, navigate=True):
+                await self._submit(field, page)
+            elif await self._authorized(page, navigate=True):
+                return await self._connected()
+            else:
                 username, password = config.get("username", ""), config.get("password", "")
                 if not username or not password:
                     raise ATIWebAuthRequired("Укажите логин и пароль ATI")
                 await page.goto(LOGIN_URL, wait_until="domcontentloaded")
                 login = await self._first_visible(page, [
-                    "input[autocomplete='username']", "input[name*='login' i]", "input[type='email']", "input[type='text']"
+                    "input[autocomplete='username']", "input[name*='login' i]", "input[name='username']", "input[type='email']", "input[type='text']"
                 ])
                 secret = await self._first_visible(page, ["input[autocomplete='current-password']", "input[type='password']"])
                 if not login or not secret:
                     raise ATIWebError("ATI изменил форму входа — поля логина и пароля не найдены")
                 await login.fill(username)
                 await secret.fill(password)
-                button = page.get_by_role("button", name="Войти").first
-                if not await button.count():
-                    button = page.locator("button[type='submit'], input[type='submit']").first
-                await button.click()
-                await page.wait_for_timeout(1_000)
+                # Enter в поле пароля, а не клик по «Войти»: в шапке АТИ есть скрытая кнопка «Войти», клик по ней висит до таймаута
+                await self._submit(secret, page)
 
-            if await self._authorized(page):
-                await self._save_state()
-                self.last_status = {"connected": True, "state": "connected"}
-                return self.last_status
-            verification = await self._first_visible(page, [
-                "input[autocomplete='one-time-code']", "input[name*='code' i]", "input[inputmode='numeric']"
-            ])
-            if verification:
+            if await self._first_visible(page, CODE_FIELDS):
                 self.last_status = {"connected": False, "state": "verification_required"}
                 return self.last_status
-            body = (await page.locator("body").inner_text())[:2_000]
-            if "captcha" in body.lower() or "капч" in body.lower():
+            body = (await page.locator("body").inner_text())[:2_000].lower()
+            if "captcha" in body or "капч" in body:
+                await self._snapshot(page)
                 self.last_status = {"connected": False, "state": "manual_required"}
                 return self.last_status
+            if "id.ati.su/login" not in page.url and await self._authorized(page, navigate=True):
+                return await self._connected()
+            await self._snapshot(page)
             self.last_status = {"connected": False, "state": "login_failed"}
             return self.last_status
+
+    async def _connected(self) -> dict[str, Any]:
+        await self._save_state()
+        self.last_status = {"connected": True, "state": "connected"}
+        return self.last_status
+
+    @staticmethod
+    async def _submit(field, page: Page) -> None:
+        """Отправить форму и дождаться, что АТИ ответил: ушёл со страницы или нарисовал поле кода / ошибку."""
+        before = page.url
+        await field.press("Enter")
+        with contextlib.suppress(Exception):
+            await page.wait_for_url(lambda url: url != before, timeout=20_000)
+        with contextlib.suppress(Exception):
+            await page.wait_for_load_state("domcontentloaded")
+        await page.wait_for_timeout(1_500)  # поле кода и текст ошибки АТИ рисует скриптом
+
+    @staticmethod
+    async def _snapshot(page: Page) -> None:
+        """Снимок неудачного входа для разбора: /data/ati-login-last.png (без паролей — поля уже отправлены)."""
+        with contextlib.suppress(Exception):
+            await page.screenshot(path=str(_state_path().with_name("ati-login-last.png")))
 
     async def search(self, body: dict[str, Any], config: dict[str, Any]) -> tuple[list[dict], int, int]:
         async with self._locked():

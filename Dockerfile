@@ -18,10 +18,15 @@ ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PROJECT_ENVIRONMENT=/venv PATH=/v
 WORKDIR /app/server
 COPY server/pyproject.toml server/uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
+# Camoufox (Firefox с подменой отпечатка) для входа на биржу АТИ: системные библиотеки Firefox и сам браузер
+# в кэше пользователя app (~/.cache/camoufox), где его ищет camoufox; модель отпечатков fpgen — в site-packages, поэтому под root.
+RUN playwright install-deps firefox && rm -rf /var/lib/apt/lists/* \
+    && useradd -r -m -u 10001 app && mkdir -p /data && chown app /data \
+    && HOME=/home/app python -m camoufox fetch && chown -R app /home/app \
+    && rm -rf /home/app/.cache/camoufox/browsers/*/*/fonts/W /home/app/.cache/camoufox/browsers/*/*/fonts/M  # шрифты Windows/macOS (1,2 ГБ): отпечаток у нас Linux
+USER app
 COPY server/ ./
 COPY --from=web /web/dist /app/web/dist
-RUN useradd -r -u 10001 app && mkdir -p /data && chown app /data
-USER app
 EXPOSE 8010
 HEALTHCHECK --interval=30s --timeout=5s CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8010/api/health')"
 # --no-access-log: в путях вебхука секрет, в логи его не пишем

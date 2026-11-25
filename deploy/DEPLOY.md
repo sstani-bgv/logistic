@@ -20,9 +20,10 @@ docker compose exec app python manage.py check-ati             # токен и �
 
 ## Обновление
 
-```bash
-cd /opt/logistic && git pull && docker compose up -d --build
-```
+Само: пуш в `main` → GitHub Actions гоняет тесты и собирает образ в `ghcr.io/sstani-bgv/logistic` → сервер раз в минуту забирает код и образ (`deploy/autodeploy.sh`, systemd-таймер `logistic-autodeploy`). Один раз на сервере: `bash deploy/autodeploy.sh install`. Пакет в GitHub Packages должен быть публичным (секретов в образе нет, они в `.env`), иначе нужен `docker login ghcr.io`.
+
+Посмотреть, что делал таймер: `journalctl -u logistic-autodeploy -n 50`. Откатиться: в `docker-compose.yml` поставить `image: ghcr.io/sstani-bgv/logistic:<sha коммита>` и `docker compose up -d`.
+Сервис `backup` собирается на сервере: после правок в `deploy/backup` — `docker compose up -d --build backup`.
 
 База и записи звонков лежат в volume `data` и при обновлении не трогаются. После правки `.env` нужен `docker compose up -d` — `docker compose restart` новые переменные не подхватит.
 

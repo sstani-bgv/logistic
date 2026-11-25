@@ -1,6 +1,8 @@
 """Клиент АТИ: поиск по бирже (тот же JSON, что у сайта) + официальный мессенджер API."""
 import os
+from contextvars import ContextVar
 import httpx
+from ati_browser import ATIWebAuthRequired, ATIWebError, session as browser_session
 
 TOKEN = os.environ.get("ATI_TOKEN", "")  # без токена модуль импортируется (тесты, мок), запросы вернут 401
 # ATI требует код фирмы интегратора в User-Agent. client_id приложения используется при выдаче токена.
@@ -9,6 +11,9 @@ CLIENT_ID = os.environ.get("ATI_CLIENT_ID") or "5464422"  # без своего 
 HEAD = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/json",
         "User-Agent": f"ati_integrator_{os.environ.get('ATI_INTEGRATOR_ID', '5464422')}"}
 client = httpx.AsyncClient(headers=HEAD, timeout=30, follow_redirects=True)
+search_proxy = None
+browser_config = None
+search_response_bytes = ContextVar("search_response_bytes", default=0)
 
 
 async def search(truck, page):
@@ -22,10 +27,20 @@ async def search(truck, page):
         body["filter"].pop("truck_type")
     if truck.get("capacity"):
         body["filter"]["weight"] = {"max": truck["capacity"]}
+    if browser_config and browser_config.get("enabled"):
+        loads, total, response_bytes = await browser_session.search(body, browser_config)
+        search_response_bytes.set(response_bytes)
+        return loads, total
     # Публичная выдача — без ставок, фирм и контактов. Полную включаем, когда АТИ откроет к ней доступ токену (сейчас 403).
     path = "v1.0" if os.environ.get("ATI_SEARCH_FULL") == "1" else "public/v1.0"
-    r = await client.post(f"https://loads.ati.su/webapi/{path}/loads/search", json=body)
+    url = f"https://loads.ati.su/webapi/{path}/loads/search"
+    if search_proxy:
+        async with httpx.AsyncClient(proxy=search_proxy, headers=HEAD, timeout=30) as proxy_client:
+            r = await proxy_client.post(url, json=body)
+    else:
+        r = await client.post(url, json=body)
     r.raise_for_status()
+    search_response_bytes.set(len(r.content))
     j = r.json()
     loads = j.get("loads", [])
     for load in loads:

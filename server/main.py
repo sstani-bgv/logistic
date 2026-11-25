@@ -237,6 +237,7 @@ async def monitor():
                 except Exception as e:
                     mark("ati_search", False, f"поиск грузов: {ati_err(e)}")
             await auto_start()
+            await refresh_general_if_due()
         except Exception as e:  # ошибка одного прохода не должна останавливать поиск навсегда
             log(f"Ошибка мониторинга: {e}", "error")
         try:
@@ -834,6 +835,7 @@ async def lifespan(app):
     yield
     for t in tasks:
         t.cancel()
+    await ati.browser_session.close()
     if LINE:
         LINE.stop()
 
@@ -1704,10 +1706,158 @@ class SearchProfile(BaseModel):
     capacity: float = Field(20, gt=0, le=60)
     height: float = Field(2.7, gt=0, le=5)
     default_mode: str = Field("general", pattern="^(general|trucks)$")
+    auto_refresh: bool = False
+    refresh_hours: int = Field(4, ge=1, le=24)
 
 
 class SearchQuery(SearchProfile):
     page: int = Field(1, ge=1, le=100)
+    refresh: bool = False
+
+
+search_refresh_lock = asyncio.Lock()
+
+
+class SearchProxy(BaseModel):
+    enabled: bool = False
+    url: str = Field("", max_length=500)
+    username: str = Field("", max_length=200)
+    password: str = Field("", max_length=500)
+
+
+class SearchATIAccount(BaseModel):
+    enabled: bool = False
+    username: str = Field("", max_length=200)
+    password: str = Field("", max_length=500)
+
+
+def configure_search_proxy(value):
+    from urllib.parse import quote
+    if not value.get("enabled"):
+        ati.search_proxy = None
+        return
+    parsed = urlparse(value["url"])
+    credentials = ""
+    if value.get("username"):
+        credentials = quote(value["username"], safe="") + ":" + quote(value.get("password", ""), safe="") + "@"
+    ati.search_proxy = f"{parsed.scheme}://{credentials}{parsed.netloc}"
+
+
+def configure_ati_browser() -> None:
+    ati.browser_config = {
+        **SearchATIAccount().model_dump(),
+        **kv_get("search_ati_account", {}),
+        "proxy": {**SearchProxy().model_dump(), **kv_get("search_proxy", {})},
+    }
+
+
+configure_search_proxy(kv_get("search_proxy", {}))
+configure_ati_browser()
+
+
+@app.get("/api/search/ati", dependencies=[Depends(auth.require_owner)])
+async def get_search_ati():
+    value = {**SearchATIAccount().model_dump(), **kv_get("search_ati_account", {})}
+    return {**value, "password": "", "password_set": bool(value.get("password")),
+            **ati.browser_session.last_status}
+
+
+@app.put("/api/search/ati", dependencies=[Depends(auth.require_owner)])
+async def save_search_ati(b: SearchATIAccount):
+    value = b.model_dump()
+    if not value["password"]:
+        value["password"] = kv_get("search_ati_account", {}).get("password", "")
+    kv_set("search_ati_account", value)
+    configure_ati_browser()
+    await ati.browser_session.close()
+    ati.browser_session.last_status = {"connected": False, "state": "not_checked"}
+    auth.record(DB, "search_ati_account", None, "Настройки сессии ATI обновлены")
+    return {"ok": True}
+
+
+class ATIVerification(BaseModel):
+    code: str = Field(pattern=r"^\d{4,8}$")
+
+
+async def connect_ati(code: str = ""):
+    if not ati.browser_config or not ati.browser_config.get("enabled"):
+        raise HTTPException(400, "Сначала сохраните и включите вход в ATI")
+    try:
+        return await ati.browser_session.login(ati.browser_config, code)
+    except ati.ATIWebAuthRequired as error:
+        raise HTTPException(400, str(error)) from error
+    except ati.ATIWebError as error:
+        raise HTTPException(502, str(error)) from error
+
+
+@app.post("/api/search/ati/connect", dependencies=[Depends(auth.require_owner)])
+async def connect_search_ati():
+    return await connect_ati()
+
+
+@app.post("/api/search/ati/verify", dependencies=[Depends(auth.require_owner)])
+async def verify_search_ati(b: ATIVerification):
+    return await connect_ati(b.code)
+
+
+@app.get("/api/search/proxy", dependencies=[Depends(auth.require_owner)])
+async def get_search_proxy():
+    value = {**SearchProxy().model_dump(), **kv_get("search_proxy", {})}
+    return {**value, "password": "", "password_set": bool(value.get("password"))}
+
+
+@app.put("/api/search/proxy", dependencies=[Depends(auth.require_owner)])
+async def save_search_proxy(b: SearchProxy):
+    try:
+        parsed = urlparse(b.url)
+        port = parsed.port
+    except ValueError:
+        raise HTTPException(400, "Некорректный адрес или порт прокси")
+    if b.enabled and (parsed.scheme not in ("http", "https") or not parsed.hostname
+                      or not port
+                      or parsed.username or parsed.password or parsed.path not in ("", "/")
+                      or parsed.query or parsed.fragment):
+        raise HTTPException(400, "Укажите HTTP(S)-адрес прокси с портом, логин и пароль — отдельно")
+    value = b.model_dump()
+    if not value["password"]:
+        value["password"] = kv_get("search_proxy", {}).get("password", "")
+    kv_set("search_proxy", value)
+    configure_search_proxy(value)
+    configure_ati_browser()
+    await ati.browser_session.close()
+    auth.record(DB, "search_proxy", None, "Настройки прокси обновлены")
+    return {"ok": True}
+
+
+@app.post("/api/search/proxy/check", dependencies=[Depends(auth.require_owner)])
+async def check_search_proxy():
+    if not ati.search_proxy:
+        raise HTTPException(400, "Сначала сохраните и включите прокси")
+    try:
+        async with httpx.AsyncClient(proxy=ati.search_proxy, timeout=15) as connection:
+            response = await connection.get("https://loads.ati.su/")
+        return {"ok": response.status_code < 400, "status": response.status_code}
+    except httpx.HTTPError:
+        raise HTTPException(502, "Соединение через прокси не удалось. Проверьте адрес и доступы.")
+
+
+@app.get("/api/search/cache")
+async def search_cache():
+    saved = kv_get("search_last_result")
+    return json.loads(saved) if saved else None
+
+
+async def refresh_general_if_due():
+    profile = await search_profile()
+    if not profile.get("auto_refresh") or search_refresh_lock.locked():
+        return
+    attempt = kv_get("search_last_attempt", 0)
+    if time.time() - attempt < profile["refresh_hours"] * 3600:
+        return
+    try:
+        await general_search(SearchQuery(**profile, refresh=True))
+    except Exception as error:
+        log(f"Плановое обновление грузов не удалось: {type(error).__name__}", "error")
 
 
 @app.get("/api/search/profile")
@@ -1725,13 +1875,45 @@ async def save_search_profile(b: SearchProfile):
 
 @app.post("/api/search")
 async def general_search(b: SearchQuery):
+    cache_key = "search_cache:" + b.model_dump_json(exclude={"refresh"})
+    saved = kv_get(cache_key)
+    if saved and not b.refresh:
+        return json.loads(saved)
+    if search_refresh_lock.locked():
+        raise HTTPException(409, "Обновление уже выполняется. Дождитесь завершения.")
+    async with search_refresh_lock:
+        kv_set("search_last_attempt", time.time())
+        started = time.monotonic()
+        ati.search_response_bytes.set(0)
+        result = await fetch_general_search(b)
+        result["response_bytes"] = ati.search_response_bytes.get()
+        result["duration_seconds"] = round(time.monotonic() - started, 2)
+        result["updated_at"] = datetime.now(timezone.utc).isoformat()
+        kv_set(cache_key, json.dumps(result))
+        kv_set("search_last_result", json.dumps(result))
+        # Keep the most recently refreshed searches within a bounded cache.
+        keys = [key for key in kv_get("search_cache_keys", []) if key != cache_key]
+        keys.append(cache_key)
+        for expired in keys[:-100]:
+            DB.execute("delete from kv where k=?", (expired,))
+        kv_set("search_cache_keys", keys[-100:])
+        return result
+
+
+async def fetch_general_search(b: SearchQuery):
     origin = await city(b.city_name)
     target = await city(b.to_city_name) if b.to_city_name.strip() else None
-    profile = {**b.model_dump(), "city_id": origin["CityId"], "lat": origin["Latitude"],
+    profile = {**b.model_dump(exclude={"refresh"}), "city_id": origin["CityId"], "lat": origin["Latitude"],
                "lon": origin["Longitude"], "free_from": date.today().isoformat(),
                "to_city_id": target["CityId"] if target else None}
     try:
         raw_loads, total = await ati.search(profile, b.page)
+    except ati.ATIWebAuthRequired as e:
+        mark("ati_search", False, str(e))
+        raise HTTPException(409, str(e)) from e
+    except ati.ATIWebError as e:
+        mark("ati_search", False, str(e))
+        raise HTTPException(502, str(e)) from e
     except httpx.HTTPError as e:
         mark("ati_search", False, ati_err(e))
         raise HTTPException(502, ati_err(e)) from e
@@ -1747,7 +1929,7 @@ async def general_search(b: SearchQuery):
                        "verdict": verdict, "reasons": reasons, "metrics": metrics, "status": "new"})
     result.sort(key=lambda load: load["score"], reverse=True)
     mark("ati_search", True)
-    return {"loads": result, "total": total, "page": b.page, "profile": b.model_dump(exclude={"page"}),
+    return {"loads": result, "total": total, "page": b.page, "profile": b.model_dump(exclude={"page", "refresh"}),
             "public_only": any(load["raw"].get("publicOnly") for load in result)}
 
 

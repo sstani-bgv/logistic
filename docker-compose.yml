@@ -1,6 +1,7 @@
-# Прод: docker compose up -d --build   (.env лежит рядом, только на сервере)
+# Прод: образ app собирает GitHub Actions, сервер забирает его сам (deploy/autodeploy.sh). .env — только на сервере
 services:
   app:
+    image: ghcr.io/sstani-bgv/logistic:latest   # собирает GitHub Actions (.github/workflows/deploy.yml)
     build:
       context: .
       args:

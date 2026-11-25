@@ -61,6 +61,7 @@ export default function SettingsPage() {
         <Button onClick={save} disabled={busy}><Save />Сохранить</Button>
       </div>
       <SearchPanel settings />
+      <AtiAccount />
       {GROUPS.map((g) => (
         <section key={g.title} className="rounded-xl border bg-card p-5">
           <h2 className="mb-4 font-medium">{g.title}</h2>
@@ -191,6 +192,66 @@ function TrialCall() {
         {call.transcript && <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-muted p-3 font-sans text-sm">{call.transcript}</pre>}
       </div>}
     </div>
+  )
+}
+
+type AtiT = { enabled: boolean; username: string; password: string; password_set?: boolean; connected?: boolean; state?: string }
+const ATI_STATE: Record<string, string> = {
+  connected: "Вход выполнен — поиск идёт с полными ставками и контактами",
+  verification_required: "ATI прислал код подтверждения — введите его ниже",
+  manual_required: "ATI попросил ручную проверку (капча) — автоматический вход не прошёл",
+  login_failed: "Вход не выполнен. Проверьте логин и пароль.",
+  expired: "Сессия ATI истекла — нажмите «Войти и проверить»",
+  not_checked: "Вход ещё не проверялся",
+}
+
+// Вход на биржу АТИ под аккаунтом логиста: браузер на сервере (Camoufox) держит сессию, поиск идёт через неё.
+function AtiAccount() {
+  const [a, setA] = useState<AtiT | null>(null)
+  const [code, setCode] = useState("")
+  const [busy, setBusy] = useState(false)
+  useEffect(() => { api<AtiT>("/search/ati").then(setA).catch((e) => toast.error(errText(e))) }, [])
+  const run = async (fn: () => Promise<Partial<AtiT> | void>) => {
+    setBusy(true)
+    try { const r = await fn(); if (r) setA((p) => p && { ...p, ...r }) } catch (e) { toast.error(errText(e)) } finally { setBusy(false) }
+  }
+  if (!a) return null
+  const save = () => api("/search/ati", { method: "PUT", body: a }).then(() => ({ password: "", password_set: a.password_set || !!a.password, state: "not_checked", connected: false }))
+  const login = () => run(async () => ({ ...(await save()), ...(await api<AtiT>("/search/ati/connect", { method: "POST" })) }))
+  const verify = () => run(async () => { const r = await api<AtiT>("/search/ati/verify", { method: "POST", body: { code } }); setCode(""); return r })
+  return (
+    <section className="rounded-xl border bg-card p-5">
+      <h2 className="mb-1 font-medium">Аккаунт биржи ATI</h2>
+      <p className="mb-4 text-sm text-muted-foreground">Поиск грузов под этим аккаунтом — со ставками и контактами. Если выключено, поиск идёт через API без них.</p>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="flex items-center gap-2 sm:col-span-2">
+          <Switch id="ati-on" checked={a.enabled} onCheckedChange={(v) => setA({ ...a, enabled: v })} />
+          <Label htmlFor="ati-on">Искать под аккаунтом ATI</Label>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="ati-login">Логин ATI</Label>
+          <Input id="ati-login" autoComplete="off" value={a.username} onChange={(e) => setA({ ...a, username: e.target.value })} />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="ati-pass">Пароль ATI</Label>
+          <Input id="ati-pass" type="password" autoComplete="new-password" value={a.password} placeholder={a.password_set ? "сохранён — оставьте пустым" : ""}
+            onChange={(e) => setA({ ...a, password: e.target.value })} />
+        </div>
+      </div>
+      <div className="mt-5 flex flex-wrap items-center gap-2">
+        <Button type="button" onClick={() => run(save)} disabled={busy}><Save />Сохранить</Button>
+        <Button type="button" variant="outline" onClick={login} disabled={busy || !a.enabled}>
+          {busy ? <Loader2 className="animate-spin" /> : <CheckCircle2 />}Войти и проверить</Button>
+      </div>
+      {a.state === "verification_required" && (
+        <form className="mt-3 flex gap-2" onSubmit={(e) => { e.preventDefault(); void verify() }}>
+          <Input className="w-40" inputMode="numeric" autoComplete="one-time-code" maxLength={8} placeholder="Код из ATI" aria-label="Код из ATI"
+            value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} />
+          <Button type="submit" disabled={busy || code.length < 4}>Подтвердить</Button>
+        </form>
+      )}
+      {a.state && <p role="status" className={`mt-3 text-sm ${a.connected ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground"}`}>{ATI_STATE[a.state] ?? a.state}</p>}
+    </section>
   )
 }
 

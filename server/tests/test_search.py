@@ -41,6 +41,107 @@ def test_saved_search_profile_requires_owner_and_survives_read(make_client):
     assert result["city_name"] == "Казань" and result["default_mode"] == "trucks"
 
 
+def test_search_cache_avoids_requests_and_survives_failed_refresh(monkeypatch, make_client):
+    import httpx
+    requests = []
+
+    async def city(name):
+        return {"CityId": 1, "Latitude": 59.94, "Longitude": 30.32}
+
+    async def search(profile, page):
+        requests.append(page)
+        if len(requests) > 1:
+            raise httpx.ConnectError("provider unavailable")
+        return [load_raw()], 1
+
+    monkeypatch.setattr(main, "city", city)
+    monkeypatch.setattr(main.ati, "search", search)
+    client = make_client("logist")
+    assert client.get("/api/search/cache").json() is None
+    original = client.post("/api/search", json={"refresh": True}).json()
+    assert original["updated_at"]
+    assert client.post("/api/search", json={}).json() == original
+    assert requests == [1]
+    assert client.post("/api/search", json={"refresh": True}).status_code == 502
+    assert client.get("/api/search/cache").json() == original
+
+
+def test_proxy_settings_are_owner_only_and_password_is_hidden(make_client, monkeypatch):
+    monkeypatch.setattr(main.ati, "search_proxy", None)
+    client = make_client("owner")
+    config = {"enabled": True, "url": "http://proxy.example:8080", "username": "operator", "password": "secret"}
+    assert make_client("logist").put("/api/search/proxy", json=config).status_code == 403
+    assert client.put("/api/search/proxy", json=config).status_code == 200
+    saved = client.get("/api/search/proxy").json()
+    assert saved["password"] == "" and saved["password_set"]
+    assert client.put("/api/search/proxy", json={**config, "password": ""}).status_code == 200
+    assert main.kv_get("search_proxy")["password"] == "secret"
+    assert client.put("/api/search/proxy", json={**config, "url": "file:///tmp/proxy"}).status_code == 400
+
+
+def test_ati_browser_account_is_owner_only_hides_password_and_connects(make_client, monkeypatch):
+    async def close():
+        return None
+
+    async def login(config, code=""):
+        assert config["enabled"] and config["username"] == "dispatcher"
+        assert config["password"] == "secret"
+        assert code in ("", "1234")
+        return {"connected": not code, "state": "connected" if not code else "verification_required"}
+
+    monkeypatch.setattr(main.ati.browser_session, "close", close)
+    monkeypatch.setattr(main.ati.browser_session, "login", login)
+    config = {"enabled": True, "username": "dispatcher", "password": "secret"}
+    assert make_client("logist").put("/api/search/ati", json=config).status_code == 403
+    client = make_client("owner")
+    assert client.put("/api/search/ati", json=config).status_code == 200
+    saved = client.get("/api/search/ati").json()
+    assert saved["password"] == "" and saved["password_set"]
+    assert client.post("/api/search/ati/connect").json()["connected"]
+    assert client.post("/api/search/ati/verify", json={"code": "1234"}).status_code == 200
+    assert client.post("/api/search/ati/verify", json={"code": "12"}).status_code == 422
+
+
+def test_scheduled_refresh_obeys_interval_and_disabled_state(monkeypatch):
+    import asyncio
+    calls = []
+
+    async def city(name):
+        return {"CityId": 1, "Latitude": 59.94, "Longitude": 30.32}
+
+    async def search(profile, page):
+        calls.append(page)
+        return [load_raw()], 1
+
+    monkeypatch.setattr(main, "city", city)
+    monkeypatch.setattr(main.ati, "search", search)
+    asyncio.run(main.refresh_general_if_due())
+    assert calls == []
+    main.kv_set("search_profile", main.SearchProfile(auto_refresh=True).model_dump_json())
+    asyncio.run(main.refresh_general_if_due())
+    asyncio.run(main.refresh_general_if_due())
+    assert calls == [1]
+    main.kv_set("search_last_attempt", main.time.time() - 4 * 3600 - 1)
+    asyncio.run(main.refresh_general_if_due())
+    assert calls == [1, 1]
+
+
+def test_cache_keeps_last_hundred_searches(monkeypatch, make_client):
+    async def fetch(query):
+        return {"loads": [], "total": 0, "page": query.page, "profile": query.model_dump(),
+                "public_only": False}
+
+    monkeypatch.setattr(main, "fetch_general_search", fetch)
+    client = make_client("logist")
+    for radius in range(100, 202):
+        assert client.post("/api/search", json={"radius": radius, "refresh": True}).status_code == 200
+    keys = main.kv_get("search_cache_keys")
+    assert len(keys) == 100
+    assert len(main.q("select k from kv where k like 'search_cache:%'")) == 100
+    latest = client.get("/api/search/cache").json()
+    assert latest["profile"]["radius"] == 201
+
+
 def test_general_search_exposes_provider_failure(monkeypatch, make_client):
     import httpx
 

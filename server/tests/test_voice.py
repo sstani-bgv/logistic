@@ -157,9 +157,9 @@ def test_voice_prompt_forbids_agreeing():
 
 def test_greeting_has_route_and_goes_first(env, monkeypatch):
     import agent
-    g = agent.greeting(load_raw(), "Иван")
-    assert g.startswith("Здравствуйте! Я помощник логиста Иван") and "Санкт-Петербург — Москва" in g
-    assert agent.greeting({}, "Иван").endswith("на АТИ. Вам удобно сейчас говорить?")  # без маршрута — без «: »
+    g = agent.greeting(load_raw())
+    assert g.startswith("Здравствуйте! Это Вера") and "Санкт-Петербург — Москва" in g and len(g.split()) <= 16
+    assert agent.greeting({}).endswith("на АТИ. Удобно говорить?")  # без маршрута — без «: »
     fake = FakeYandex()
     monkeypatch.setattr(voice, "CONNECT", fake)
 
@@ -224,4 +224,4 @@ def test_collect_punctuation_fix_not_duplicated():
 def test_greeting_no_double_dot():
     import agent
     l = {"loading": {"location": {"city": "Санкт-Петербург"}}, "unloading": {"location": {"city": "Чехов г."}}}
-    assert agent.greeting(l, "Иван").endswith("Санкт-Петербург — Чехов г. Вам удобно сейчас говорить?")
+    assert agent.greeting(l).endswith("Санкт-Петербург — Чехов г. Удобно говорить?")

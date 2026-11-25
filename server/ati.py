@@ -3,6 +3,7 @@ import os
 from contextvars import ContextVar
 import httpx
 from ati_browser import ATIWebAuthRequired, ATIWebError, session as browser_session
+from scoring import DISTRICTS
 
 TOKEN = os.environ.get("ATI_TOKEN", "")  # без токена модуль импортируется (тесты, мок), запросы вернут 401
 # ATI требует код фирмы интегратора в User-Agent. client_id приложения используется при выдаче токена.
@@ -18,11 +19,13 @@ search_response_bytes = ContextVar("search_response_bytes", default=0)
 
 async def search(truck, page):
     body = {"page": page, "items_per_page": 10, "exclude_geo_dicts": True,
-            "filter": {"from": {"id": truck["city_id"], "type": 2, "radius": truck["radius"]},
+            "filter": {"from": {"id": truck["city_id"], "type": 2, "radius": min(truck["radius"], 999)},
                        "dates": {"date_option": "today-plus"}, "truck_type": truck["body_mask"],
                        "sorting_type": 2, "extra_params": 0}}
-    if truck.get("to_city_id"):
-        body["filter"]["to"] = {"id": truck["to_city_id"], "type": 2, "radius": 150}
+    if truck.get("to_district") in DISTRICTS:  # округ — гео-список АТИ, как шлёт сам сайт
+        body["filter"]["to"] = {"type": 5, "exact_only": True, "list_id": DISTRICTS[truck["to_district"]][1], "list_type": 0}
+    elif truck.get("to_city_id"):
+        body["filter"]["to"] = {"id": truck["to_city_id"], "type": 2, "radius": min(truck.get("to_radius") or 150, 999)}
     if not truck["body_mask"]:
         body["filter"].pop("truck_type")
     if truck.get("capacity"):

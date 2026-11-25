@@ -20,7 +20,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 import agent
 import llm
@@ -32,7 +32,7 @@ import sip
 import telephony
 import voice
 from urllib.parse import urlparse
-from scoring import score
+from scoring import DISTRICTS, MAX_RADIUS, score
 
 ROOT = Path(__file__).parent
 DATA_DIR = Path(os.environ.get("DATA_DIR", ROOT))
@@ -67,6 +67,10 @@ def migrate():
     if "status" not in cols:
         DB.execute("alter table trucks add column status text default 'free'")
         DB.execute("update trucks set status='busy' where free_from>?", (date.today().isoformat(),))
+    for col, typ in (("to_lat", "real"), ("to_lon", "real"), ("to_radius", "int"), ("to_district", "text")):
+        if col not in cols:  # куда машине нужно: город с радиусом или федеральный округ (пусто — вся Россия)
+            DB.execute(f"alter table trucks add column {col} {typ}")
+    DB.execute("update trucks set radius=999 where radius>999")  # больше АТИ не принимает
     dcols = {r[1] for r in DB.execute("pragma table_info(dialogs)")}
     if "draft" not in dcols:  # ответ агента при выключенной отправке
         DB.execute("alter table dialogs add column draft text")
@@ -82,14 +86,14 @@ migrate()
 DEFAULTS = {"vat": 22, "min_rate_km": 55, "threshold": 55, "scan_minutes": 5, "pages": 4, "scan_auto": True, "send_enabled": False,
             # агент сам берёт лучшие грузы; лимиты — чтобы не спамить биржу
             "auto_start": False, "auto_score": 85, "auto_per_cycle": 1, "auto_daily": 3,  # старт у клиента — осторожно, потом поднять
-            "default_goal": "Узнать то, чего нет в объявлении и что нужно для решения: актуален ли груз; если ставка «запрос» — "
-                            "какую ставку и форму оплаты дают; точный адрес и время погрузки; особые требования (доверенность, "
-                            "ремни, растентовка). Первое сообщение — 1–2 коротких вопроса, без торга. Если ставка ниже {min_rate_km} ₽/км "
-                            "чистыми — потом вежливо попробовать поднять.",
+            "default_goal": "Уточнить по грузу то, чего нет в объявлении: ещё актуален ли; если ставка «запрос» — сколько "
+                            "и как платят (с НДС, без, на карту); точный адрес и время погрузки; есть ли особые условия "
+                            "(доверенность, ремни, растентовка). Спрашивать коротко, по одному, без торга. Если ставка ниже "
+                            "{min_rate_km} ₽/км чистыми — в конце один раз спросить, есть ли куда подвинуться по ставке.",
             # готовые сценарии — кнопки в окне «Поручить агенту»; правит владелец в Настройках
-            "goal_presets": ["Узнать, актуален ли груз и можно ли поднять ставку до 60 ₽/км",
-                             "Уточнить точный адрес, время погрузки и нужна ли доверенность",
-                             "Предложить нашу машину и спросить про обратную загрузку"]}
+            "goal_presets": ["Груз ещё актуален? Сколько ставка и как платят",
+                             "Точный адрес и время погрузки, нужна ли доверенность",
+                             "Актуален ли и можно ли подвинуться по ставке до {min_rate_km} ₽/км"]}
 DEFAULTS.update(calls.DEFAULTS)
 
 # Парк для демо (DEMO_SEED=1): города/кузова — пример, правится на странице «Машины». На проде не вставляется.
@@ -312,7 +316,7 @@ def instructions_for_call(d):
 
 def greeting_for_call(d):
     load, *_ = prompt_inputs(d)
-    return agent.greeting(load, ME.get("name", "логист"))
+    return agent.greeting(load)
 
 
 def safe_greeting(d):
@@ -546,7 +550,7 @@ def test_call_script():
     truck = t[0] if t else {"name": "тягач", "body_name": "тент", "capacity": 20, "height": 2.7,
                             "city_name": TEST_ROUTE[0], "free_from": day[:10]}
     name = ME.get("name", "логист")
-    return (agent.call_instructions(load, {"dist": 710}, truck, TEST_GOAL, [], "", name), agent.greeting(load, name))
+    return (agent.call_instructions(load, {"dist": 710}, truck, TEST_GOAL, [], "", name), agent.greeting(load))
 
 
 async def line_talk(line_call):
@@ -1709,9 +1713,12 @@ class Truck(BaseModel):
     name: str
     driver: str = ""
     city_name: str
-    radius: int = Field(150, ge=10, le=2000)
+    radius: int = Field(150, ge=10, le=MAX_RADIUS)
     body_mask: int = Field(1, ge=1)
     body_name: str = "тент"
+    to_city_name: str = Field("", max_length=150)  # куда нужно машине; пусто и без округа — вся Россия
+    to_radius: int = Field(150, ge=10, le=MAX_RADIUS)
+    to_district: str = Field("", pattern="^(|" + "|".join(DISTRICTS) + ")$")
     height: float = Field(2.7, gt=0, le=5)
     capacity: float = Field(20, gt=0, le=60)
     free_from: date
@@ -1731,16 +1738,33 @@ async def city(name):
     return c
 
 
+class Route(BaseModel):
+    """Одно направление общего поиска, как строка «Откуда → Куда» в АТИ: у каждого города свой радиус."""
+    from_city: str = Field("Санкт-Петербург", min_length=1, max_length=150)
+    from_radius: int = Field(150, ge=10, le=MAX_RADIUS)
+    to_city: str = Field("", max_length=150)  # пусто — любое направление
+    to_radius: int = Field(150, ge=10, le=MAX_RADIUS)
+
+
 class SearchProfile(BaseModel):
-    city_name: str = Field("Санкт-Петербург", min_length=1, max_length=150)
-    to_city_name: str = Field("", max_length=150)
-    radius: int = Field(150, ge=10, le=2000)
+    routes: list[Route] = Field(default_factory=lambda: [Route()], min_length=1, max_length=10)
     body_mask: int = Field(1, ge=0, le=65535)
     capacity: float = Field(20, gt=0, le=60)
     height: float = Field(2.7, gt=0, le=5)
     default_mode: str = Field("general", pattern="^(general|trucks)$")
     auto_refresh: bool = False
     refresh_hours: int = Field(4, ge=1, le=24)
+
+    @model_validator(mode="before")
+    @classmethod
+    def legacy_single_route(cls, v):
+        """Старый профиль (одно «откуда/куда/радиус», радиус до 2000) — в список направлений."""
+        if isinstance(v, dict) and "routes" not in v and {"city_name", "to_city_name", "radius"} & v.keys():
+            v = dict(v)
+            r = {"from_city": v.pop("city_name", None) or Route().from_city, "to_city": v.pop("to_city_name", "") or "",
+                 "from_radius": min(int(v.pop("radius", 150) or 150), MAX_RADIUS)}
+            v["routes"] = [r]
+        return v
 
 
 class SearchQuery(SearchProfile):
@@ -1904,7 +1928,7 @@ async def search_profile():
 @app.put("/api/search/profile", dependencies=[Depends(auth.require_owner)])
 async def save_search_profile(b: SearchProfile):
     kv_set("search_profile", b.model_dump_json())
-    auth.record(DB, "search_profile", None, f"{b.city_name} → {b.to_city_name or 'везде'}")
+    auth.record(DB, "search_profile", None, "; ".join(f"{r.from_city} → {r.to_city or 'везде'}" for r in b.routes))
     return b.model_dump()
 
 
@@ -1935,14 +1959,47 @@ async def general_search(b: SearchQuery):
         return result
 
 
+GENERAL_PAGES = 3  # страниц АТИ (по 10 грузов) на одну страницу общего поиска по каждому направлению
+PAGE_PAUSE = 1.5  # темп как у человека между страницами биржи
+
+
+async def route_profile(b: SearchProfile, route: Route):
+    """Направление общего поиска -> «машина» для ati.search и score: откуда с радиусом, куда с радиусом."""
+    origin = await city(route.from_city)
+    target = await city(route.to_city) if route.to_city.strip() else None
+    return {**b.model_dump(include={"body_mask", "capacity", "height"}), "city_id": origin["CityId"],
+            "lat": origin["Latitude"], "lon": origin["Longitude"], "radius": route.from_radius,
+            "free_from": date.today().isoformat(), "to_city_id": target["CityId"] if target else None,
+            "to_city_name": target.get("CityName", route.to_city) if target else "", "to_radius": route.to_radius,
+            "to_lat": target["Latitude"] if target else None, "to_lon": target["Longitude"] if target else None}
+
+
 async def fetch_general_search(b: SearchQuery):
-    origin = await city(b.city_name)
-    target = await city(b.to_city_name) if b.to_city_name.strip() else None
-    profile = {**b.model_dump(exclude={"refresh"}), "city_id": origin["CityId"], "lat": origin["Latitude"],
-               "lon": origin["Longitude"], "free_from": date.today().isoformat(),
-               "to_city_id": target["CityId"] if target else None}
+    rules, st = q("select * from rules where active=1"), settings()
+    result, seen, total, more = [], set(), 0, False
     try:
-        raw_loads, total = await ati.search(profile, b.page)
+        for i, route in enumerate(b.routes):
+            profile = await route_profile(b, route)
+            first = (b.page - 1) * GENERAL_PAGES + 1
+            for page in range(first, first + GENERAL_PAGES):
+                if page > first:
+                    await asyncio.sleep(PAGE_PAUSE)
+                raw_loads, route_total = await ati.search(profile, page)
+                for raw in raw_loads:
+                    if raw.get("id") in seen:  # направления пересекаются — один груз показываем один раз
+                        continue
+                    seen.add(raw.get("id"))
+                    try:
+                        value, verdict, reasons, metrics = score(raw, profile, rules, st)
+                    except (KeyError, TypeError, ValueError) as e:
+                        log(f"Груз {raw.get('id')} пропущен в общем поиске: {type(e).__name__}", "error")
+                        continue
+                    result.append({"id": raw["id"], "truck_id": 0, "raw": raw, "score": value, "route": i,
+                                   "verdict": verdict, "reasons": reasons, "metrics": metrics, "status": "new"})
+                if page * 10 >= route_total or not raw_loads:
+                    break
+            total += route_total
+            more = more or b.page * GENERAL_PAGES * 10 < route_total
     except ati.ATIWebAuthRequired as e:
         mark("ati_search", False, str(e))
         raise HTTPException(409, str(e)) from e
@@ -1952,19 +2009,10 @@ async def fetch_general_search(b: SearchQuery):
     except httpx.HTTPError as e:
         mark("ati_search", False, ati_err(e))
         raise HTTPException(502, ati_err(e)) from e
-    result = []
-    rules, st = q("select * from rules where active=1"), settings()
-    for raw in raw_loads:
-        try:
-            value, verdict, reasons, metrics = score(raw, profile, rules, st)
-        except (KeyError, TypeError, ValueError) as e:
-            log(f"Груз {raw.get('id')} пропущен в общем поиске: {type(e).__name__}", "error")
-            continue
-        result.append({"id": raw["id"], "truck_id": 0, "raw": raw, "score": value,
-                       "verdict": verdict, "reasons": reasons, "metrics": metrics, "status": "new"})
     result.sort(key=lambda load: load["score"], reverse=True)
     mark("ati_search", True)
-    return {"loads": result, "total": total, "page": b.page, "profile": b.model_dump(exclude={"page", "refresh"}),
+    return {"loads": result, "total": total, "page": b.page, "more": more and b.page < 100,
+            "profile": b.model_dump(exclude={"page", "refresh"}),
             "public_only": any(load["raw"].get("publicOnly") for load in result)}
 
 
@@ -1973,6 +2021,7 @@ class RateByHand(BaseModel):
     profile: SearchProfile
     price: int = Field(gt=0, le=100_000_000)
     money: int = 1
+    route: int = Field(0, ge=0)  # какое направление общего поиска нашло груз
 
 
 @app.post("/api/search/rate")
@@ -1980,9 +2029,7 @@ async def rate_by_hand(b: RateByHand):
     """Логист вписал ставку, которую видит на АТИ, — пересчитать оценку груза из общего поиска. Ничего не сохраняем."""
     if b.money not in (1, 2, 3, 23):
         raise HTTPException(400, "Форма оплаты: с НДС, без НДС, наличными или на карту")
-    origin = await city(b.profile.city_name)
-    profile = {**b.profile.model_dump(), "city_id": origin["CityId"], "lat": origin["Latitude"],
-               "lon": origin["Longitude"], "free_from": date.today().isoformat()}
+    profile = await route_profile(b.profile, b.profile.routes[min(b.route, len(b.profile.routes) - 1)])
     old = b.load.get("rate") if isinstance(b.load.get("rate"), dict) else {}
     raw = {**b.load, "rate": {**{k: old.get(k) for k in ("prepay", "prepayEnabled", "payDays", "payDaysEnabled", "payOnUnload")},
                               "price": b.price, "moneyType": b.money}}
@@ -1993,15 +2040,30 @@ async def rate_by_hand(b: RateByHand):
     return {"score": value, "verdict": verdict, "reasons": reasons, "metrics": metrics}
 
 
+async def destination(b: Truck, old=None):
+    """Куда нужно машине -> поля to_*: город — с кодом и координатами для АТИ и оценки; округ или вся Россия — без города."""
+    name = "" if b.to_district else b.to_city_name.strip()
+    if not name:
+        return ("", None, None, None, b.to_radius, b.to_district or None)
+    if old and old.get("to_city_name") == name and old.get("to_lat") is not None:
+        return (name, old["to_city_id"], old["to_lat"], old["to_lon"], b.to_radius, None)
+    c = await city(name)
+    return (c["CityName"], c["CityId"], c["Latitude"], c["Longitude"], b.to_radius, None)
+
+
+DEST_COLS = "to_city_name,to_city_id,to_lat,to_lon,to_radius,to_district"
+
+
 @app.post("/api/trucks")
 async def add_truck(b: Truck):
     c = await city(b.city_name)
     check_status(b.status)
     st, ff = form_status(b.status, b.free_from.isoformat())
-    DB.execute("insert into trucks(name,driver,city_name,city_id,lat,lon,radius,body_mask,body_name,height,capacity,free_from,active,status)"
-               " values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    to = await destination(b)
+    DB.execute("insert into trucks(name,driver,city_name,city_id,lat,lon,radius,body_mask,body_name,height,capacity,free_from,active,status,"
+               f"{DEST_COLS}) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                (b.name, b.driver, c["CityName"], c["CityId"], c["Latitude"], c["Longitude"], b.radius, b.body_mask,
-                b.body_name, b.height, b.capacity, ff, int(b.active), st))
+                b.body_name, b.height, b.capacity, ff, int(b.active), st, *to))
     auth.record(DB, "truck_add", None, b.name)
     return {"ok": True}
 
@@ -2017,10 +2079,12 @@ async def edit_truck(tid: int, b: Truck):
         c = await city(b.city_name)
     check_status(b.status)
     st, ff = form_status(b.status, b.free_from.isoformat())
+    to = await destination(b, t)
     DB.execute("update trucks set name=?,driver=?,city_name=?,city_id=?,lat=?,lon=?,radius=?,body_mask=?,body_name=?,"
-               "height=?,capacity=?,free_from=?,active=?,status=? where id=?",
+               "height=?,capacity=?,free_from=?,active=?,status=?,to_city_name=?,to_city_id=?,to_lat=?,to_lon=?,to_radius=?,"
+               "to_district=? where id=?",
                (b.name, b.driver, c["CityName"], c["CityId"], c["Latitude"], c["Longitude"], b.radius, b.body_mask,
-                b.body_name, b.height, b.capacity, ff, int(b.active), st, tid))
+                b.body_name, b.height, b.capacity, ff, int(b.active), st, *to, tid))
     auth.record(DB, "truck_edit", tid, b.name)
     rescore()
     return {"ok": True}

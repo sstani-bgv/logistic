@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from ati_browser import ATIWebAuthRequired, ATIWebSession
+from ati_browser import ATIWebAuthRequired, ATIWebError, ATIWebSession
 
 
 class FakePage:
@@ -48,3 +48,20 @@ def test_authenticated_search_rejects_public_fallback(monkeypatch):
     monkeypatch.setattr(session, "_save_state", lambda: None)
     with pytest.raises(ATIWebAuthRequired):
         asyncio.run(session.search({}, {"enabled": True}))
+
+
+def test_browser_failure_closes_it_and_reports_readable_error(monkeypatch):
+    session = ATIWebSession()
+    closed = []
+
+    async def ensure(config):
+        raise TimeoutError("Page.goto: Timeout 60000ms exceeded")
+
+    async def close():
+        closed.append(True)
+
+    monkeypatch.setattr(session, "_ensure", ensure)
+    monkeypatch.setattr(session, "close", close)
+    with pytest.raises(ATIWebError, match="ATI не ответил вовремя"):
+        asyncio.run(session.login({"enabled": True}))
+    assert closed  # повисший Firefox не остаётся в памяти

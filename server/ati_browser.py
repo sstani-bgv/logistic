@@ -7,6 +7,7 @@ and performs the same search request as the signed-in web application.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -60,14 +61,26 @@ class ATIWebSession:
         self.last_status: dict[str, Any] = {"connected": False, "state": "not_checked"}
 
     async def close(self) -> None:
-        if self._context:
-            await self._context.close()
-        if self._browser:
-            await self._browser.close()
-        if self._playwright:
-            await self._playwright.stop()
+        # браузер мог уже упасть — закрываем что осталось, иначе висящий Firefox съедает память, а следующий запуск — ещё столько же
+        for closing in (self._context and self._context.close, self._browser and self._browser.close,
+                        self._playwright and self._playwright.stop):
+            if closing:
+                with contextlib.suppress(Exception):
+                    await closing()
         self._playwright = self._browser = self._context = self._page = None
         self._config_fingerprint = ""
+
+    @contextlib.asynccontextmanager
+    async def _locked(self):
+        """Один запрос к браузеру за раз; любой сбой браузера (таймаут, падение) — закрыть его и понятная ошибка вместо 500."""
+        async with self.lock:
+            try:
+                yield
+            except ATIWebError:
+                raise
+            except Exception as error:
+                await self.close()
+                raise ATIWebError(f"ATI не ответил вовремя, попробуйте ещё раз ({type(error).__name__})") from error
 
     async def _ensure(self, config: dict[str, Any]) -> Page:
         fingerprint = json.dumps({"proxy": _proxy(config)}, sort_keys=True)
@@ -98,7 +111,7 @@ class ATIWebSession:
 
         await self._context.route("**/*", route_request)
         self._page = await self._context.new_page()
-        self._page.set_default_timeout(15_000)
+        self._page.set_default_timeout(60_000)  # слабый сервер: Firefox грузит страницы АТИ десятки секунд
         self._config_fingerprint = fingerprint
         return self._page
 
@@ -128,7 +141,7 @@ class ATIWebSession:
         return None
 
     async def login(self, config: dict[str, Any], code: str = "") -> dict[str, Any]:
-        async with self.lock:
+        async with self._locked():
             page = await self._ensure(config)
             if code:
                 field = await self._first_visible(page, [
@@ -179,7 +192,7 @@ class ATIWebSession:
             return self.last_status
 
     async def search(self, body: dict[str, Any], config: dict[str, Any]) -> tuple[list[dict], int, int]:
-        async with self.lock:
+        async with self._locked():
             page = await self._ensure(config)
             if not await self._authorized(page, navigate=True):
                 raise ATIWebAuthRequired("Сессия ATI не подключена. Откройте Настройки → ATI и выполните вход.")

@@ -1769,7 +1769,8 @@ async def save_search_ati(b: SearchATIAccount):
         value["password"] = kv_get("search_ati_account", {}).get("password", "")
     kv_set("search_ati_account", value)
     configure_ati_browser()
-    await ati.browser_session.close()
+    async with ati.browser_session.lock:  # не закрывать браузер посреди поиска
+        await ati.browser_session.close()
     ati.browser_session.last_status = {"connected": False, "state": "not_checked"}
     auth.record(DB, "search_ati_account", None, "Настройки сессии ATI обновлены")
     return {"ok": True}
@@ -1824,7 +1825,8 @@ async def save_search_proxy(b: SearchProxy):
     kv_set("search_proxy", value)
     configure_search_proxy(value)
     configure_ati_browser()
-    await ati.browser_session.close()
+    async with ati.browser_session.lock:  # не закрывать браузер посреди поиска
+        await ati.browser_session.close()
     auth.record(DB, "search_proxy", None, "Настройки прокси обновлены")
     return {"ok": True}
 

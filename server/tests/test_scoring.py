@@ -58,3 +58,4 @@ def test_destination_city_and_district_cut_other_directions():
     assert district({"region": "Московская обл."}) == "ЦФО" and district({"region": "Ямало-Ненецкий АО"}) == "УФО"
     assert district({"region": "Нижегородская обл."}) == "ПФО" and district({"city": "Санкт-Петербург"}) == "СЗФО"
     assert district({"region": "Минская обл."}) is None
+    assert district({"region": "Республика Бурятия"}) == "СФО"  # как в гео-списках АТИ

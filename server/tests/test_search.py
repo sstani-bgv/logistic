@@ -288,4 +288,6 @@ def test_truck_destination_saved_and_sent_to_ati(monkeypatch, make_client):
     assert (t["to_city_name"], t["to_city_id"], t["to_district"]) == ("", None, "СЗФО")
     with pytest.raises(main.httpx.ConnectError):
         asyncio.run(main.ati.search(t, 1))
-    assert "to" not in bodies[-1]["filter"]  # округ АТИ не передаём — отсекает оценка
+    assert bodies[-1]["filter"]["to"] == {"type": 5, "exact_only": True, "list_type": 0,  # как шлёт сайт АТИ
+                                          "list_id": "6f5e4ef8-e210-e311-b4ec-00259038ec34"}
+    assert bodies[-1]["items_per_page"] == 10

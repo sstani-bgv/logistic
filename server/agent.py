@@ -47,13 +47,15 @@ NEGOTIATE_SCHEMA = {
     },
 }
 
+RULE_FIELDS = ["firm_id", "firm_name", "cargo", "load_city", "unload_city", "note", "profile", "claims", "none"]
 RULE_SCHEMA = {
     "type": "object", "additionalProperties": False,
-    "required": ["match", "value", "block", "delta", "text"],
+    "required": ["match", "value", "block", "delta", "text"],  # второе условие необязательно — слабые модели его опускают
     "properties": {
-        "match": {"type": "string", "enum": ["firm_id", "firm_name", "cargo", "load_city",
-                                             "unload_city", "note", "profile", "none"]},
+        "match": {"type": "string", "enum": RULE_FIELDS},
         "value": {"type": "string"},
+        "match2": {"type": "string", "enum": RULE_FIELDS},
+        "value2": {"type": "string"},
         "block": {"type": "boolean"},
         "delta": {"type": "integer"},
         "text": {"type": "string"},
@@ -176,7 +178,12 @@ async def learn_rule(reason, load=None, metrics=None):
 Объяснение логиста: «{reason}»
 
 Поля: match — по чему срабатывает: firm_id (конкретная фирма, value=код), firm_name, cargo (тип груза, подстрока),
-load_city / unload_city (город, подстрока), note (подстрока примечания), profile ('эксп' для экспедиторов), none — только если ни одно поле не подходит.
+load_city / unload_city (город, подстрока), note (подстрока примечания), profile ('эксп' для экспедиторов),
+claims (претензии к фирме: value — с какого числа претензий срабатывает, например «2»), none — только если ни одно поле не подходит.
+match2/value2 — второе условие, оба должны выполниться (И): направление «Питер → Москва» = load_city «петербург» + unload_city «москв».
+Если направление указано — всегда оба города, иначе правило заденет все грузы из этого города. Второго условия нет — match2 «none», value2 пусто.
+Про претензии: «1 претензия не негатив, 2 и более — негатив» = claims «2» со штрафом; встроенный штраф за любую претензию тогда отключается.
+Для названия города бери основу без окончания («петербург», «москв», «мурманск»), чтобы срабатывало на все формы.
 Если в объяснении есть город, тип груза или фирма — правило всегда по этому полю; условия вроде «зимой» или «обычно» превращай в штраф (block=false, delta от -30 до -15), а не в заметку.
 value — что искать (в нижнем регистре). block — true, если такие грузы вообще не показывать; иначе false и delta — штраф/бонус к оценке от -30 до +20.
 text — короткая формулировка правила для базы знаний, от лица компании (например: «Не возим кирпич — бьётся тент»)."""

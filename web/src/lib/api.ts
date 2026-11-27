@@ -42,7 +42,7 @@ export type Dialog = {
   id: number; load_id: string; chat_id: string | null; goal: string; status: string; summary: string; auto: number; updated: number
   facts: Record<string, string | null>; load: Load | null; messages: Msg[]; calls?: Call[]; phone?: string | null; draft?: string | null
 }
-export type Rule = { id: number; match: string; value: string; block: number; delta: number; text: string; source: string; active: number; created: number }
+export type Rule = { id: number; match: string; value: string; match2?: string | null; value2?: string | null; block: number; delta: number; text: string; source: string; active: number; created: number }
 export type LogItem = { ts: number; text: string; kind: string }
 export type Stats = {
   seen: number; relevant: number; filtered: number; views: number; scans: number; dialogs: number; ready: number

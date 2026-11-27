@@ -4,6 +4,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react"
 import { api, errText, type Load } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { CityInput } from "@/components/CityInput"
 import { Label } from "@/components/ui/label"
 
 // Направление как строка «Откуда → Куда» в фильтре АТИ: у каждого города свой радиус, «куда» пусто — любое
@@ -78,10 +79,10 @@ export default function SearchPanel({ settings = false, onResults, onDefaultMode
         <fieldset className="flex flex-col gap-2 sm:col-span-2 xl:col-span-3">
           <legend className="mb-1 text-sm font-medium">Направления</legend>
           {profile.routes.map((r, i) => <div key={i} className="flex flex-wrap items-end gap-2 rounded-lg bg-muted/40 p-2">
-            <div className="grid min-w-40 flex-1 gap-1.5"><Label htmlFor={`from-${i}`}>Откуда</Label><Input id={`from-${i}`} required value={r.from_city} onChange={(e) => setRoute(i, "from_city", e.target.value)} /></div>
+            <div className="grid min-w-40 flex-1 gap-1.5"><Label htmlFor={`from-${i}`}>Откуда</Label><CityInput id={`from-${i}`} required value={r.from_city} onChange={(v) => setRoute(i, "from_city", v)} /></div>
             {radius(`from-r-${i}`, "Радиус, км", r.from_radius, (v) => setRoute(i, "from_radius", v))}
             <span className="pb-2 text-muted-foreground" aria-hidden>→</span>
-            <div className="grid min-w-40 flex-1 gap-1.5"><Label htmlFor={`to-${i}`}>Куда</Label><Input id={`to-${i}`} placeholder="Любое направление" value={r.to_city} onChange={(e) => setRoute(i, "to_city", e.target.value)} /></div>
+            <div className="grid min-w-40 flex-1 gap-1.5"><Label htmlFor={`to-${i}`}>Куда</Label><CityInput id={`to-${i}`} placeholder="Любое направление" value={r.to_city} onChange={(v) => setRoute(i, "to_city", v)} /></div>
             {radius(`to-r-${i}`, "Радиус, км", r.to_radius, (v) => setRoute(i, "to_radius", v))}
             {profile.routes.length > 1 && <Button type="button" variant="ghost" aria-label={`Убрать направление ${i + 1}`} onClick={() => setProfile({ ...profile, routes: profile.routes.filter((_, j) => j !== i) })}>Убрать</Button>}
           </div>)}

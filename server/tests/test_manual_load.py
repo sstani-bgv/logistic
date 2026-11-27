@@ -163,3 +163,39 @@ def test_ad_cannot_swap_phone(client, monkeypatch):
                                         ("8 911 000 11 22 и 8(812)3090000", ["+79110001122", "+78123090000"])])
 def test_ad_phones(text, want):
     assert main.ad_phones(text) == want
+
+
+KRASNODAR = [{"CityId": 3, "CityName": "Апшеронск г.", "CitySize": 2}, {"CityId": 120, "CityName": "Краснодар", "CitySize": 5},
+             {"CityId": 5, "CityName": "Краснодарский г.", "CitySize": 1}]
+
+
+@pytest.mark.parametrize("name, want", [("Краснодар", 120), (" краснодар ", 120), ("Апшеронск", 3), ("Кубань", 3)])
+def test_city_picks_exact_name_not_first_in_region(name, want):
+    assert main.pick_city(name, KRASNODAR)["CityId"] == want
+
+
+TWINS = [{"CityId": 7, "CityName": "Октябрьский п.", "RegionName": "Пермский край", "CitySize": 2},
+         {"CityId": 8, "CityName": "Октябрьский г.", "RegionName": "Башкортостан", "CitySize": 3}]
+
+
+def test_hint_region_picks_the_right_twin():
+    assert main.pick_city("Октябрьский п., Пермский край", TWINS)["CityId"] == 7
+    assert main.pick_city("Октябрьский", TWINS)["CityId"] == 8
+
+
+def test_city_hints(client, monkeypatch):
+    async def cities(name):
+        assert name == "Краснодар"
+        return [{**c, "RegionName": "Краснодарский край"} for c in KRASNODAR]
+    monkeypatch.setattr(main, "ati_cities", cities)
+    hints = client.get("/api/cities", params={"q": "Краснодар"}).json()
+    assert hints[0] == "Краснодар, Краснодарский край" and len(hints) == 3
+    assert client.get("/api/cities", params={"q": "К"}).json() == []
+    assert main.pick_city(hints[0], [{**c, "RegionName": "Краснодарский край"} for c in KRASNODAR])["CityId"] == 120
+
+
+@pytest.mark.parametrize("name, want", [("Краснодар", ("Краснодар", "")), ("Апшеронск г., Краснодарский край", ("Апшеронск г.", "Краснодарский край")),
+                                        ("Октябрьский рп. (г.о. Люберцы), Московская область", ("Октябрьский рп. (г.о. Люберцы)", "Московская область")),
+                                        ("Марьяновка г-к (Луцкий р-н, громада)", ("Марьяновка г-к (Луцкий р-н, громада)", ""))])
+def test_split_region(name, want):
+    assert main.split_region(name) == want

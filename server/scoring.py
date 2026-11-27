@@ -147,15 +147,13 @@ def score(load, truck, rules, settings):
     if per_km is None:
         add("Без ставки: оценены только маршрут, вес, кузов и даты" if partial and not asked else "Ставка «запрос» — агент уточнит", -8)
     else:
+        # плавно, а не ступеньками: 45 ₽/км должны стоять выше 35, даже если обе выше нормы
         target = settings["min_rate_km"]
-        if per_km >= target * 1.15:
-            add(f"Ставка {per_km:.0f} ₽/км чистыми ({mt}) — выше нормы", 18)
-        elif per_km >= target:
-            add(f"Ставка {per_km:.0f} ₽/км чистыми ({mt})", 8)
-        elif per_km >= target * 0.85:
-            add(f"Ставка {per_km:.0f} ₽/км — чуть ниже нормы {target}", -10)
+        ratio = per_km / target
+        if ratio >= 1:
+            add(f"Ставка {per_km:.0f} ₽/км чистыми ({mt})" + (" — выше нормы" if ratio >= 1.15 else ""), min(35, round(8 + 30 * (ratio - 1))))
         else:
-            add(f"Ставка {per_km:.0f} ₽/км — ниже нормы {target}", -30)
+            add(f"Ставка {per_km:.0f} ₽/км — {'чуть ' if ratio >= 0.85 else ''}ниже нормы {target}", max(-35, round(-8 - 60 * (1 - ratio))))
 
     # выгрузка в центре Москвы
     if km(upos, MOSCOW_CENTER) < 7:
@@ -167,8 +165,8 @@ def score(load, truck, rules, settings):
     else:
         if (firm.get("userLists") or {}).get("black"):
             add("Фирма в вашем чёрном списке", kind="block")
-        if firm.get("claims"):
-            add(f"Претензии к фирме: {firm['claims']}", -15)
+        if firm.get("claims") and not any(r["active"] and "claims" in (r["match"], r.get("match2")) for r in rules):
+            add(f"Претензии к фирме: {firm['claims']}", -15)  # своё правило о претензиях в базе знаний — заменяет это
         if firm.get("isConfirmedShipper"):
             add("Подтверждённый грузовладелец", 6)
         elif (firm.get("profile") or "").startswith("эксп"):
@@ -191,9 +189,16 @@ def score(load, truck, rules, settings):
 
 
 def rule_hits(rule, load):
-    """Правила из базы знаний: простые структурные условия, которые Codex извлёк из текста."""
-    m, v = rule["match"], (rule["value"] or "").lower()
+    """Правила из базы знаний: одно-два условия (И), которые модель извлекла из текста. «СПб → Москва» — два условия."""
+    m2 = rule.get("match2")
+    return cond_hits(rule["match"], rule["value"], load) and (not m2 or m2 == "none" or cond_hits(m2, rule.get("value2"), load))
+
+
+def cond_hits(m, v, load):
+    v = (v or "").lower()
     firm = load.get("firm") or {}
+    if m == "claims":  # value — с какого числа претензий срабатывает
+        return v.isdigit() and int(firm.get("claims") or 0) >= max(1, int(v))
     field = {
         "firm_id": str(firm.get("id", "")),
         "firm_name": (firm.get("name") or "").lower(),

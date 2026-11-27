@@ -8,7 +8,8 @@ import { Textarea } from "@/components/ui/textarea"
 import { api, ask, errText, usePoll, ago, type Rule } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
-const MATCH: Record<string, string> = { firm_id: "фирма", firm_name: "фирма", cargo: "тип груза", load_city: "погрузка", unload_city: "выгрузка", note: "примечание", profile: "тип заказчика", none: "заметка агенту" }
+const MATCH: Record<string, string> = { firm_id: "фирма", firm_name: "фирма", cargo: "тип груза", load_city: "погрузка", unload_city: "выгрузка", note: "примечание", profile: "тип заказчика", claims: "претензий к фирме", none: "заметка агенту" }
+const cond = (m: string, v: string) => m === "claims" ? `претензий к фирме ${v} и больше` : `${MATCH[m] ?? m} содержит «${v}»`
 
 export default function KnowledgePage() {
   const { data: rules, reload } = usePoll<Rule[]>("/rules", 8000)
@@ -49,7 +50,7 @@ export default function KnowledgePage() {
                 <div className="min-w-0 flex-1">
                   <div className="font-medium">{r.text}</div>
                   <div className="mt-0.5 text-xs text-muted-foreground">
-                    {r.match !== "none" && <>если {MATCH[r.match]} содержит «{r.value}» → {r.block ? "не показывать" : `${r.delta > 0 ? "+" : ""}${r.delta} к оценке`} · </>}{ago(r.created)}
+                    {r.match !== "none" && <>если {cond(r.match, r.value)}{r.match2 && r.match2 !== "none" && <> и {cond(r.match2, r.value2 ?? "")}</>} → {r.block ? "не показывать" : `${r.delta > 0 ? "+" : ""}${r.delta} к оценке`} · </>}{ago(r.created)}
                   </div>
                   <div className="mt-1.5 text-sm text-muted-foreground">{r.source.startsWith("Созвон") ? r.source : `Логист: «${r.source}»`}</div>
                 </div>

@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
+import { CityInput } from "@/components/CityInput"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { api, errText, usePoll, rub, ddmm, ago, atiLink, type Load, type Truck } from "@/lib/api"
 import { cn } from "@/lib/utils"
@@ -134,7 +135,9 @@ function ManualLoadDialog({ init, trucks, onClose, onDone }: { init: Partial<Man
     } catch (e) { toast.error(errText(e)) } finally { setBusy(false) }
   }
   const text = (k: "from_city" | "to_city" | "cargo" | "firm" | "contact" | "phone", label: string, placeholder = "") => (
-    <div className="grid gap-1.5"><Label htmlFor={`m-${k}`}>{label}</Label><Input id={`m-${k}`} value={f[k]} placeholder={placeholder} onChange={(e) => setF({ ...f, [k]: e.target.value })} /></div>)
+    <div className="grid gap-1.5"><Label htmlFor={`m-${k}`}>{label}</Label>{k === "from_city" || k === "to_city"
+      ? <CityInput id={`m-${k}`} value={f[k]} placeholder={placeholder} onChange={(v) => setF({ ...f, [k]: v })} />
+      : <Input id={`m-${k}`} value={f[k]} placeholder={placeholder} onChange={(e) => setF({ ...f, [k]: e.target.value })} />}</div>)
   const num = (k: "weight" | "price" | "distance", label: string) => (
     <div className="grid gap-1.5"><Label htmlFor={`m-${k}`}>{label}</Label><Input id={`m-${k}`} type="number" min={0} value={f[k] || ""} onChange={(e) => setF({ ...f, [k]: Number(e.target.value) })} /></div>)
   return (

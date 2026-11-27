@@ -3,6 +3,7 @@ import { toast } from "sonner"
 import { Loader2, Pencil, Plus, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { CityInput } from "@/components/CityInput"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
@@ -114,7 +115,9 @@ function TruckDialog({ t, onClose, onDone }: { t: Truck | null; onClose: () => v
   const field = (k: keyof Truck, label: string, type = "text") => (
     <div className="flex flex-col gap-1.5">
       <Label htmlFor={`t-${k}`}>{label}</Label>
-      <Input id={`t-${k}`} type={type} value={String(cur?.[k] ?? "")} onChange={(e) => set(k, type === "number" ? num(e.target.value) : e.target.value)} />
+      {type === "city"
+        ? <CityInput id={`t-${k}`} value={String(cur?.[k] ?? "")} onChange={(v) => set(k, v)} />
+        : <Input id={`t-${k}`} type={type} value={String(cur?.[k] ?? "")} onChange={(e) => set(k, type === "number" ? num(e.target.value) : e.target.value)} />}
     </div>
   )
   return (
@@ -123,7 +126,7 @@ function TruckDialog({ t, onClose, onDone }: { t: Truck | null; onClose: () => v
         <DialogHeader><DialogTitle>{cur?.id ? "Машина" : "Новая машина"}</DialogTitle></DialogHeader>
         <div className="grid grid-cols-2 gap-3">
           {field("name", "Машина и госномер")}{field("driver", "Водитель")}
-          {field("city_name", "Где освобождается")}{field("free_from", "С какой даты (в будущем — занята)", "date")}
+          {field("city_name", "Где освобождается", "city")}{field("free_from", "С какой даты (в будущем — занята)", "date")}
           {field("radius", "Радиус поиска, км (до 999)", "number")}{field("height", "Высота кузова, м", "number")}
           {field("capacity", "Грузоподъёмность, т", "number")}{field("body_name", "Кузов")}
         </div>
@@ -141,7 +144,7 @@ function TruckDialog({ t, onClose, onDone }: { t: Truck | null; onClose: () => v
             <select id="t-district" className="h-9 rounded-md border bg-background px-3 text-sm" value={cur?.to_district || "ЦФО"} onChange={(e) => set("to_district", e.target.value)}>
               {Object.entries(DISTRICTS).map(([k, v]) => <option key={k} value={k}>{k} — {v}</option>)}
             </select></div>}
-          {mode === "city" && field("to_city_name", "Город выгрузки")}
+          {mode === "city" && field("to_city_name", "Город выгрузки", "city")}
           {mode === "city" && field("to_radius", "Радиус вокруг него, км", "number")}
         </div>
         <div className="flex items-center gap-2"><Switch id="t-active" checked={!!cur?.active} onCheckedChange={(v) => set("active", v ? 1 : 0)} /><Label htmlFor="t-active">Искать грузы</Label></div>

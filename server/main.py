@@ -78,6 +78,9 @@ def migrate():
         DB.execute("alter table dialogs add column fails int default 0")
     if "by_agent" not in dcols:  # диалог начал агент сам (в дневной лимит автостарта), а не логист
         DB.execute("alter table dialogs add column by_agent int default 0")
+    if "match2" not in {r[1] for r in DB.execute("pragma table_info(rules)")}:  # второе условие правила: «СПб → Москва»
+        DB.execute("alter table rules add column match2 text")
+        DB.execute("alter table rules add column value2 text")
 
 
 migrate()
@@ -1032,7 +1035,7 @@ async def loads(view: str = "relevant", truck: int | None = None, limit: int = Q
     args = [time.time() - LIST_TTL] if view in ("relevant", "filtered") else []
     if truck:
         where += f" and truck_id={int(truck)}"
-    order = "score desc, updated desc" if view == "relevant" else "updated desc"
+    order = "score desc, coalesce(json_extract(metrics,'$.per_km'),0) desc, updated desc" if view == "relevant" else "updated desc"
     return [load_row(r) for r in q(f"select * from loads where {where} order by {order} limit ?", *args, limit)]
 
 
@@ -1201,8 +1204,9 @@ async def reject(lid: str, b: Reason):
 
 async def add_rule_from_text(text, load=None, metrics=None, lid=None):
     r = await agent.learn_rule(text, load, metrics)
-    cur = DB.execute("insert into rules(match,value,block,delta,text,source,load_id,created) values(?,?,?,?,?,?,?,?)",
-                     (r["match"], r["value"].lower(), int(r["block"]), r["delta"], r["text"], text, lid, time.time()))
+    cur = DB.execute("insert into rules(match,value,match2,value2,block,delta,text,source,load_id,created) values(?,?,?,?,?,?,?,?,?,?)",
+                     (r["match"], r["value"].lower(), r.get("match2") or "none", (r.get("value2") or "").lower(), int(r["block"]), r["delta"], r["text"], text,
+                      lid, time.time()))
     rescore()
     log(f"База знаний пополнена: {r['text']}", "learn")
     return {**r, "id": cur.lastrowid}
@@ -1726,16 +1730,49 @@ class Truck(BaseModel):
     status: str = "free"
 
 
-async def city(name):
+async def ati_cities(name):
     try:
         r = await ati.client.get("https://api.ati.su/v1.0/dictionaries/cities", params={"name": name})
         r.raise_for_status()
     except httpx.HTTPError as e:  # не «Ошибка 500», а что именно: токен, сеть
         raise HTTPException(502, f"Не удалось найти город в справочнике АТИ — {ati_err(e)}") from e
-    c = (r.json() or [None])[0]
-    if not c:
+    return r.json() or []
+
+
+async def city(name):
+    """«Краснодар» или подсказка «Октябрьский п., Пермский край» — регион после запятой уточняет тёзок."""
+    found = await ati_cities(split_region(name)[0])
+    if not found:
         raise HTTPException(400, f"Город «{name}» не найден в справочнике АТИ")
-    return c
+    return pick_city(name, found)
+
+
+def low(s):
+    return (s or "").strip().lower().replace("ё", "е")
+
+
+def split_region(name):
+    """«Октябрьский рп. (г.о. Люберцы), Московская область» → (город, регион); запятая внутри скобок — часть названия."""
+    m = re.fullmatch(r"(.+?), ([^,()]+)", name.strip())
+    return (m[1].strip(), m[2].strip()) if m else (name.strip(), "")
+
+
+def pick_city(name, found):
+    """АТИ на «Краснодар» отдаёт весь край по CityId — первым Апшеронск. Берём город с этим названием, крупнейший."""
+    want, region = (low(x) for x in split_region(name))
+    same = [c for c in found if low(c.get("CityName")) == want or low(c.get("CityName")).startswith(want + " ")]
+    same = [c for c in same if not region or low(c.get("RegionName")) == region] or same
+    return max(same, key=lambda c: c.get("CitySize") or 0) if same else found[0]
+
+
+@app.get("/api/cities")
+async def city_hints(q: str = Query("", max_length=100)):
+    """Подсказки для полей городов: точное совпадение и крупные — выше. Значение снова понимает city()."""
+    if len(q.strip()) < 2:
+        return []
+    want = low(q)
+    found = sorted(await ati_cities(q.strip()), key=lambda c: (not low(c.get("CityName")).startswith(want), -(c.get("CitySize") or 0)))
+    return [f"{c['CityName']}, {c['RegionName']}" if c.get("RegionName") else c["CityName"] for c in found[:10]]
 
 
 class Route(BaseModel):
@@ -2017,7 +2054,7 @@ async def fetch_general_search(b: SearchQuery):
     except httpx.HTTPError as e:
         mark("ati_search", False, ati_err(e))
         raise HTTPException(502, ati_err(e)) from e
-    result.sort(key=lambda load: load["score"], reverse=True)
+    result.sort(key=lambda load: (load["score"], load["metrics"].get("per_km") or 0), reverse=True)  # при равном балле — дороже за км
     mark("ati_search", True)
     return {"loads": result, "total": total, "page": b.page, "more": more and b.page < 100,
             "profile": b.model_dump(exclude={"page", "refresh"}),

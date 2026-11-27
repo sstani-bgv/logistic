@@ -101,7 +101,7 @@ def test_bad_answers_raise(content, msg):
 
 
 def test_integer_rejects_bool():
-    rule = {"match": "cargo", "value": "кирпич", "block": True, "delta": True, "text": "t"}
+    rule = {"match": "cargo", "value": "кирпич", "block": True, "delta": True, "text": "t"}  # match2 необязателен
     serve(json.dumps(rule))
     with pytest.raises(llm.LLMError, match="delta"):
         run(llm.complete("x", agent.RULE_SCHEMA))

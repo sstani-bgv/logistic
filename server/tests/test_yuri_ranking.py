@@ -35,3 +35,10 @@ def test_claims_rule_replaces_builtin_penalty():
     assert score(one, TRUCK, [two_plus], ST)[0] == score(load(), TRUCK, [two_plus], ST)[0]
     assert score(two, TRUCK, [two_plus], ST)[0] == score(load(), TRUCK, [], ST)[0] - 15
     assert score(one, TRUCK, [], ST)[0] < score(load(), TRUCK, [], ST)[0]  # без правила — как раньше
+
+
+def test_city_run_does_not_top_the_list():
+    city = load("Санкт-Петербург", 59.95, 30.30, price=15000, dist=3)
+    s, _, reasons, m = score(city, TRUCK, [], ST)
+    assert m["per_km"] < 200 and s < score(load(price=40000), TRUCK, [], ST)[0]
+    assert any("Короткий рейс" in r["t"] for r in reasons)

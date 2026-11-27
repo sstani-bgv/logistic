@@ -6,6 +6,7 @@ MOSCOW_CENTER = (55.7558, 37.6173)
 ROAD_FACTOR = 1.25  # ponytail: прямая * коэффициент; точные км — платный API расстояний АТИ
 MONEY = {1: "с НДС", 23: "на карту", 2: "без НДС", 3: "наличными", 0: "запрос"}
 MAX_RADIUS = 999  # больше АТИ не принимает
+SHORT_KM = 100
 
 # Федеральные округа = глобальные гео-списки АТИ (loads.ati.su/webapi/public/firms/v1.0/lists/geo/global).
 # list_id уходит в фильтр поиска (тип 5), подстроки регионов — для оценки. Составы округов — как у АТИ, не по закону:
@@ -140,7 +141,10 @@ def score(load, truck, rules, settings):
     # ставка
     rate = load["rate"]
     net = net_price(rate, settings["vat"])
-    per_km = net / (dist + dead) if net else None
+    # ponytail: короче 100 км считаем как 100 — иначе рейс по городу за 15 000 ₽ даёт тысячи ₽/км и встаёт наверх
+    per_km = net / max(dist + dead, SHORT_KM) if net else None
+    if dist < SHORT_KM:
+        add(f"Короткий рейс ≈{dist:.0f} км — ставка за км посчитана как за {SHORT_KM} км", -10)
     partial = bool(load.get("publicOnly")) and per_km is None  # ставку АТИ не отдала: балл не про выгоду
     asked = partial and rate.get("moneyType") == 0  # «запрос»: заказчик ставку не указал, скрывать нечего
     mt = MONEY.get(rate.get("moneyType"), "—")
@@ -151,7 +155,8 @@ def score(load, truck, rules, settings):
         target = settings["min_rate_km"]
         ratio = per_km / target
         if ratio >= 1:
-            add(f"Ставка {per_km:.0f} ₽/км чистыми ({mt})" + (" — выше нормы" if ratio >= 1.15 else ""), min(35, round(8 + 30 * (ratio - 1))))
+            top = 8 if dist < SHORT_KM else 35  # городской рейс за ₽/км не поднимаем — сравним только с межгородом
+            add(f"Ставка {per_km:.0f} ₽/км чистыми ({mt})" + (" — выше нормы" if ratio >= 1.15 else ""), min(top, round(8 + 30 * (ratio - 1))))
         else:
             add(f"Ставка {per_km:.0f} ₽/км — {'чуть ' if ratio >= 0.85 else ''}ниже нормы {target}", max(-35, round(-8 - 60 * (1 - ratio))))
 

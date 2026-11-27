@@ -1785,7 +1785,7 @@ class Route(BaseModel):
 
 class SearchProfile(BaseModel):
     routes: list[Route] = Field(default_factory=lambda: [Route()], min_length=1, max_length=10)
-    body_mask: int = Field(1, ge=0, le=65535)
+    body_mask: int = Field(1, ge=0, le=2**53)  # коды АТИ доходят до 2^52, групповые — суммы
     capacity: float = Field(20, gt=0, le=60)
     height: float = Field(2.7, gt=0, le=5)
     default_mode: str = Field("general", pattern="^(general|trucks)$")

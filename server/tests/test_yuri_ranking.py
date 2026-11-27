@@ -42,3 +42,12 @@ def test_city_run_does_not_top_the_list():
     s, _, reasons, m = score(city, TRUCK, [], ST)
     assert m["per_km"] < 200 and s < score(load(price=40000), TRUCK, [], ST)[0]
     assert any("Короткий рейс" in r["t"] for r in reasons)
+
+
+def test_oversize_body_mask_searches_and_scores():
+    import main
+    neg = 18726594281984  # «негабарит» АТИ: трал + низкорамный + низкорам.платф. + телескоп + балковоз
+    assert main.SearchProfile(body_mask=neg).body_mask == neg
+    tral = {**load(), "truck": {"carTypesBitSum": str(536870912)}}
+    assert score(tral, {**TRUCK, "body_mask": neg}, [], ST)[1] == "relevant"
+    assert any(r["t"] == "Кузов не подходит" for r in score(tral, TRUCK, [], ST)[2])

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
 import { ChevronLeft, ChevronRight } from "lucide-react"
-import { api, errText, type Load } from "@/lib/api"
+import { api, errText, BODIES, type Load } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { CityInput } from "@/components/CityInput"
@@ -89,7 +89,7 @@ export default function SearchPanel({ settings = false, onResults, onDefaultMode
           {profile.routes.length < 10 && <Button type="button" variant="outline" className="self-start" onClick={() => setProfile({ ...profile, routes: [...profile.routes, { ...NEW_ROUTE }] })}>+ Направление</Button>}
         </fieldset>
         <div className="grid gap-1.5"><Label htmlFor="search-body">Кузов</Label><select id="search-body" className="h-9 rounded-md border bg-background px-3 text-sm" value={profile.body_mask} onChange={(e) => set("body_mask", Number(e.target.value))}>
-          <option value={0}>Любой</option><option value={1}>Тент</option><option value={2}>Бортовой</option><option value={4}>Рефрижератор</option><option value={8}>Изотерм</option>
+          <option value={0}>Любой</option>{BODIES.map(([n, m]) => <option key={m} value={m}>{n}</option>)}
         </select></div>
         <div className="grid gap-1.5"><Label htmlFor="search-weight">Вес до, т</Label><Input id="search-weight" type="number" min={0.1} max={60} step={0.1} required value={profile.capacity} onChange={(e) => set("capacity", Number(e.target.value))} /></div>
         <div className="grid gap-1.5"><Label htmlFor="search-height">Высота до, м</Label><Input id="search-height" type="number" min={0.1} max={5} step={0.1} required value={profile.height} onChange={(e) => set("height", Number(e.target.value))} /></div>

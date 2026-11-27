@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { api, num, usePoll, ddmm, errText, DISTRICTS, type Truck } from "@/lib/api"
+import { api, num, usePoll, ddmm, errText, BODIES, bodiesIn, bodyMask, DISTRICTS, type Truck } from "@/lib/api"
 
 const EMPTY = { id: 0, name: "", driver: "", city_name: "", radius: 150, body_mask: 1, body_name: "тент", height: 2.7, capacity: 20, free_from: new Date().toISOString().slice(0, 10), active: 1, relevant: 0, status: "free" as const, to_city_name: "", to_radius: 150, to_district: "" }
 const where = (t: Truck) => t.to_district ? t.to_district : t.to_city_name ? `${t.to_city_name} ±${t.to_radius ?? 150}` : "вся Россия"
@@ -128,7 +128,11 @@ function TruckDialog({ t, onClose, onDone }: { t: Truck | null; onClose: () => v
           {field("name", "Машина и госномер")}{field("driver", "Водитель")}
           {field("city_name", "Где освобождается", "city")}{field("free_from", "С какой даты (в будущем — занята)", "date")}
           {field("radius", "Радиус поиска, км (до 999)", "number")}{field("height", "Высота кузова, м", "number")}
-          {field("capacity", "Грузоподъёмность, т", "number")}{field("body_name", "Кузов")}
+          {field("capacity", "Грузоподъёмность, т", "number")}
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="t-body">Кузов</Label>
+            <BodyPicker names={String(cur?.body_name ?? "")} onChange={(mask, name) => setF({ ...(cur as Truck), body_mask: mask, body_name: name })} />
+          </div>
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div className="flex flex-col gap-1.5">
@@ -151,5 +155,27 @@ function TruckDialog({ t, onClose, onDone }: { t: Truck | null; onClose: () => v
         <DialogFooter><Button variant="outline" onClick={close}>Отмена</Button><Button onClick={save} disabled={busy || bad}>{busy && <Loader2 className="animate-spin" />}Сохранить</Button></DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+
+/** Несколько кузовов, как в АТИ: в поиск уходит сумма кодов, в карточку — названия через запятую. */
+function BodyPicker({ names, onChange }: { names: string; onChange: (mask: number, name: string) => void }) {
+  const picked = bodiesIn(names)
+  const toggle = (m: number) => {
+    const next = picked.some(([, x]) => x === m) ? picked.filter(([, x]) => x !== m) : [...picked, BODIES.find(([, x]) => x === m)!]
+    if (next.length) onChange(bodyMask(next.map(([, x]) => x)), next.map(([n]) => n).join(", "))
+  }
+  return (
+    <details id="t-body" className="relative">
+      <summary className="flex h-9 cursor-pointer list-none items-center truncate rounded-md border bg-background px-3 text-sm">{picked.map(([n]) => n).join(", ") || (names ? `${names} — выберите из списка` : "выберите")}</summary>
+      <div className="absolute z-50 mt-1 max-h-64 w-full overflow-y-auto rounded-md border bg-popover p-1 shadow-md">
+        {BODIES.map(([n, m]) => (
+          <label key={m} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm hover:bg-muted">
+            <input type="checkbox" checked={picked.some(([, x]) => x === m)} onChange={() => toggle(m)} />{n}
+          </label>
+        ))}
+      </div>
+    </details>
   )
 }

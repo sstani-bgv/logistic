@@ -192,6 +192,8 @@ async def scan_truck(t):
                 updated=excluded.updated""",
                        (l["id"], t["id"], json.dumps(l, ensure_ascii=False), s, verdict,
                         json.dumps(reasons, ensure_ascii=False), json.dumps(m), time.time(), time.time()))
+        if page * 10 >= total or not loads:  # страница за концом выдачи — ATI отвечает 404
+            break
         await asyncio.sleep(1.5)  # темп как у человека
     DB.execute("insert into scans values(?,?,?,?)", (time.time(), t["id"], seen, total))
     mark("ati_search", True)

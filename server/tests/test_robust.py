@@ -171,3 +171,18 @@ def test_manage_agent_switch(tmp_path):
     import sqlite3
     db = sqlite3.connect(tmp_path / "data.db")
     assert [r[0] for r in db.execute("select action from actions order by rowid")] == ["agent_on", "calls_on", "agent_off"]
+
+
+def test_scan_stops_at_last_page(monkeypatch):
+    """ATI отвечает 404 на страницу за концом выдачи — мониторинг не должен её запрашивать (Исузу: 16 грузов, 4 страницы)."""
+    t, asked = truck(), []
+
+    async def search(tr, page):
+        asked.append(page)
+        if page > 2:
+            raise main.ati.ATIWebError("ATI вернул ошибку 404")
+        return [{**load_raw(), "id": f"P{page}"}], 16
+    monkeypatch.setattr(main.ati, "search", search)
+    monkeypatch.setattr(main.asyncio, "sleep", lambda s, _real=asyncio.sleep: _real(0))
+    asyncio.run(main.scan_truck(main.q("select * from trucks where id=?", t)[0]))
+    assert asked == [1, 2]
